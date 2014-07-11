@@ -8,8 +8,8 @@
 #ifndef _ADSB_MANAGER_H_
 #define _ADSB_MANAGER_H_
 
-#include <vsm/request_worker.h>
-#include <vsm/io_stream.h>
+#include <ugcs/vsm/request_worker.h>
+#include <ugcs/vsm/io_stream.h>
 #include <micro_adsb_device.h>
 #include <unordered_set>
 #include <adsb_processor.h>
@@ -18,8 +18,8 @@
  * device drivers. Currently:
  *   - MicroADS-B
  */
-class Adsb_manager: public vsm::Request_processor {
-    DEFINE_COMMON_CLASS(Adsb_manager, vsm::Request_processor)
+class Adsb_manager: public ugcs::vsm::Request_processor {
+    DEFINE_COMMON_CLASS(Adsb_manager, ugcs::vsm::Request_processor)
 
 public:
 
@@ -34,7 +34,7 @@ private:
 
     /** Enable the manager in the processor context. */
     void
-    Process_on_enable(vsm::Request::Ptr);
+    Process_on_enable(ugcs::vsm::Request::Ptr);
 
     /** Disable manager. */
     virtual void
@@ -42,24 +42,28 @@ private:
 
     /** Disable the manager in the processor context. */
     void
-    Process_on_disable(vsm::Request::Ptr);
+    Process_on_disable(ugcs::vsm::Request::Ptr);
 
     /** New connection available for detection. */
     void
-    On_new_connection(std::string, int, vsm::Io_stream::Ref);
+    On_new_connection(
+    		std::string,
+    		int,
+    		ugcs::vsm::Socket_address::Ptr,
+    		ugcs::vsm::Io_stream::Ref);
 
     /** Frames receiving initialized on Micro ADS-B device. */
     void
-    On_micro_adsb_init_frames_receiving(vsm::Io_result,
-            Micro_adsb_device::Ptr, vsm::Io_stream::Ref);
+    On_micro_adsb_init_frames_receiving(ugcs::vsm::Io_result,
+            Micro_adsb_device::Ptr, ugcs::vsm::Io_stream::Ref);
 
     /** ADS-B frame received. */
     void
-    On_frame_received(vsm::Io_buffer::Ptr, vsm::Io_result, Adsb_device::Ptr, vsm::Io_stream::Ref);
+    On_frame_received(ugcs::vsm::Io_buffer::Ptr, ugcs::vsm::Io_result, Adsb_device::Ptr, ugcs::vsm::Io_stream::Ref);
 
     /** ADS-B report received. */
     void
-    On_adsb_report(vsm::Adsb_report);
+    On_adsb_report(ugcs::vsm::Adsb_report);
 
     /** Schedule next reading of ADS-B report. */
     void
@@ -90,25 +94,25 @@ private:
         Adsb_device::Ptr device;
 
         /** Current read frame operation. */
-        vsm::Operation_waiter read_op;
+        ugcs::vsm::Operation_waiter read_op;
 
         /** Current init frames receiving operation. */
-        vsm::Operation_waiter init_op;
+        ugcs::vsm::Operation_waiter init_op;
 
     };
 
     /** Streams being detected. */
-    std::unordered_map<vsm::Io_stream::Ref, Detector_ctx, vsm::Io_stream::Ref::Hasher>
+    std::unordered_map<ugcs::vsm::Io_stream::Ref, Detector_ctx, ugcs::vsm::Io_stream::Ref::Hasher>
         streams_under_detection;
 
     /** The stream of ADS-B reports read by this manager. */
     Adsb_processor::Reports_stream::Ptr reports_stream;
 
     /** Current ADS-B report reading operation. */
-    vsm::Operation_waiter report_read_op;
+    ugcs::vsm::Operation_waiter report_read_op;
 
     /** Dedicated worker. */
-    vsm::Request_worker::Ptr worker;
+    ugcs::vsm::Request_worker::Ptr worker;
 
 };
 

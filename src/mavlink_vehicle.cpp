@@ -7,7 +7,7 @@
 
 constexpr std::chrono::seconds Mavlink_vehicle::WRITE_TIMEOUT;
 
-using namespace vsm;
+using namespace ugcs::vsm;
 
 void
 Mavlink_vehicle::On_enable()
@@ -34,8 +34,6 @@ Mavlink_vehicle::On_enable_vehicle(Request::Ptr request)
 {
     mav_stream->Bind_decoder_demuxer();
     Schedule_next_read();
-    /* Consider this is uptime start. */
-    last_connect = std::chrono::steady_clock::now();
     Wait_for_vehicle();
 
 #if 0
@@ -61,6 +59,12 @@ Mavlink_vehicle::On_disable_vehicle(Request::Ptr request)
     request->Complete();
 }
 
+ugcs::vsm::mavlink::MAV_TYPE
+Mavlink_vehicle::Get_mav_type() const
+{
+    return type;
+}
+
 void
 Mavlink_vehicle::Wait_for_vehicle()
 {
@@ -70,10 +74,12 @@ Mavlink_vehicle::Wait_for_vehicle()
 }
 
 bool
-Mavlink_vehicle::Default_mavlink_handler(mavlink::MESSAGE_ID_TYPE message_id,
-        mavlink::System_id system_id, uint8_t component_id)
+Mavlink_vehicle::Default_mavlink_handler(
+        mavlink::MESSAGE_ID_TYPE message_id,
+        typename Mavlink_kind::System_id system_id,
+        uint8_t component_id)
 {
-    LOG_WARN("Message %u unsupported from [%u:%u].", message_id,
+    VEHICLE_LOG_WRN((*this), "Message %u unsupported from [%u:%u].", message_id,
             system_id, component_id);
     return false;
 }
@@ -114,6 +120,18 @@ Mavlink_vehicle::Disable_activities()
 }
 
 void
+Mavlink_vehicle::Process_heartbeat(
+        ugcs::vsm::mavlink::Message<ugcs::vsm::mavlink::MESSAGE_ID::HEARTBEAT>::Ptr)
+{
+    Sys_status status(true, true,
+            Vehicle::Sys_status::Control_mode::UNKNOWN,
+            Vehicle::Sys_status::State::UNKNOWN,
+            std::chrono::seconds(0));
+
+    Set_system_status(status);
+}
+
+void
 Mavlink_vehicle::Write_to_vehicle_timed_out(
         const Operation_waiter::Ptr& waiter,
         Mavlink_stream::Weak_ptr mav_stream)
@@ -122,9 +140,7 @@ Mavlink_vehicle::Write_to_vehicle_timed_out(
     Io_stream::Ref stream = locked ? locked->Get_stream() : nullptr;
     std::string server_info =
             stream ? stream->Get_name() : "already disconnected";
-    LOG_DEBUG("Write timeout towards Vehicle [%s:%s] at [%s] detected.",
-            Get_model_name().c_str(), Get_serial_number().c_str(),
-            server_info.c_str());
+    VEHICLE_LOG_DBG((*this), "Write timeout on [%s] detected.", server_info.c_str());
     waiter->Abort();
 }
 
@@ -184,19 +200,14 @@ Mavlink_vehicle::Heartbeat::On_heartbeat(
     received_count++;
     mavlink::MAV_STATE system_status =
             static_cast<mavlink::MAV_STATE>(message->payload->system_status.Get());
-    auto uptime = std::chrono::duration_cast<std::chrono::seconds>(
-            std::chrono::steady_clock::now() - vehicle.last_connect);
 
-    vehicle.Set_system_status(
-            static_cast<mavlink::MAV_MODE_FLAG>(message->payload->base_mode.Get()),
-            system_status,
-            Vehicle::Custom_mode(true, true),
-            uptime);
+    vehicle.Process_heartbeat(message);
+
     if (!Is_system_status_ok(system_status)) {
-        LOG_INFO("Heartbeat system status not OK (%d)", system_status);
+        VEHICLE_LOG_INF(vehicle, "Heartbeat system status not OK (%d)", system_status);
     } else if (!first_ok_received) {
         first_ok_received = true;
-        LOG_INFO("First heartbeat received");
+        VEHICLE_LOG_INF(vehicle, "First heartbeat received.");
         vehicle.telemetry.Enable();
         /* Don't read waypoints. It is for debug only. */
         //vehicle.read_waypoints.Enable();
@@ -208,10 +219,10 @@ Mavlink_vehicle::Heartbeat::On_timer()
 {
     if (!received_count) {
         if (first_ok_received) {
-            LOG_INFO("Heartbeat lost. Still waiting...");
+            VEHICLE_LOG_INF(vehicle, "Heartbeat lost. Still waiting...");
             vehicle.Wait_for_vehicle();
         } else {
-            LOG_INFO("Heartbeat lost. Vehicle disconnected.");
+            VEHICLE_LOG_INF(vehicle, "Heartbeat lost. Vehicle disconnected.");
             /* Will trigger disconnect handler. */
             vehicle.mav_stream->Get_stream()->Close();
         }
@@ -257,7 +268,7 @@ bool
 Mavlink_vehicle::Statistics::On_timer()
 {
     auto& stats = vehicle.mav_stream->Get_decoder().Get_stats();
-    LOG_INFO("%lld Mavlink messages processed, link quality %.1f%%",
+    VEHICLE_LOG_DBG(vehicle, "%lld Mavlink messages processed, link quality %.1f%%",
             static_cast<long long>(stats.handled - num_of_processed_messages),
             vehicle.telemetry.link_quality * 100);
     num_of_processed_messages = stats.handled;
@@ -268,7 +279,10 @@ void
 Mavlink_vehicle::Statistics::On_status_text(
         mavlink::Message<mavlink::MESSAGE_ID::STATUSTEXT>::Ptr message)
 {
-    LOG_INFO("STATUS_TEXT: %s", message->payload->text.Get_string().c_str());
+    VEHICLE_LOG_INF(vehicle, "STATUS_TEXT: %s", message->payload->text.Get_string().c_str());
+    if(statustext_handler) {
+        statustext_handler(message);
+    }
 }
 
 void
@@ -338,7 +352,7 @@ Mavlink_vehicle::Read_parameters::On_param_value(
         Print_param(message, static_cast<float>(message->payload->param_value));
         break;
     default:
-        LOG_WARNING("PARAM [%s:%d] = Unsupported format!",
+        VEHICLE_LOG_WRN(vehicle, "PARAM [%s:%d] = Unsupported format!",
                             message->payload->param_id.Get_string().c_str(),
                             message->payload->param_index.Get());
     }
@@ -379,7 +393,7 @@ Mavlink_vehicle::Write_parameters::On_param_value(
 {
     if (message->payload->param_id.Get_string() !=
         parameters.back()->param_id.Get_string()) {
-        LOG_WARNING("Parameter writing validation failed. Name [%s] expected, "
+        VEHICLE_LOG_WRN(vehicle, "Parameter writing validation failed. Name [%s] expected, "
                 "but [%s] received.",
                 parameters.back()->param_id.Get_string().c_str(),
                 message->payload->param_id.Get_string().c_str());
@@ -391,7 +405,7 @@ Mavlink_vehicle::Write_parameters::On_param_value(
 
     if (message->payload->param_value.Get() !=
         parameters.back()->param_value.Get()) {
-        LOG_WARNING("Parameter writing validation failed for [%s]. Value [%f] "
+        VEHICLE_LOG_WRN(vehicle, "Parameter writing validation failed for [%s]. Value [%f] "
                 "expected, but [%f] received.",
                 parameters.back()->param_id.Get_string().c_str(),
                 parameters.back()->param_value.Get(),
@@ -399,7 +413,7 @@ Mavlink_vehicle::Write_parameters::On_param_value(
         Try();
         return;
     }
-    LOG_DEBUG("Parameter [%s:%f] write verified successfully.",
+    VEHICLE_LOG_DBG(vehicle, "Parameter [%s:%f] write verified successfully.",
             message->payload->param_id.Get_string().c_str(),
             message->payload->param_value.Get());
     /* Written OK. */
@@ -417,11 +431,11 @@ Mavlink_vehicle::Write_parameters::Try()
     }
 
     if (!attempts_left--) {
-        LOG_INFO("All parameters write attempts failed.");
+        VEHICLE_LOG_INF(vehicle, "All parameters write attempts failed.");
         Call_next_action(false);
         return false;
     }
-    LOG_INFO("Writing parameter [%s:%f].",
+    VEHICLE_LOG_INF(vehicle, "Writing parameter [%s:%f].",
             parameters.back()->param_id.Get_string().c_str(),
             parameters.back()->param_value.Get());
     Send_message(parameters.back());
@@ -473,7 +487,7 @@ Mavlink_vehicle::Read_waypoints::On_count(
         return;
     }
     waypoints_total = message->payload->count;
-    LOG_DEBUG("Reading of %lu waypoints...", waypoints_total);
+    VEHICLE_LOG_DBG(vehicle, "Reading of %zu waypoints...", waypoints_total);
     waypoint_to_read = 0;
     Unregister_mavlink_handler(mission_count_handler);
     Register_mavlink_handler<mavlink::MESSAGE_ID::MISSION_ITEM>(
@@ -494,8 +508,8 @@ Mavlink_vehicle::Read_waypoints::On_item(
     }
     if (message->payload->seq == waypoint_to_read) {
         waypoint_to_read++;
-        LOG_DEBUG("Waypoint %lu received:", waypoint_to_read);
-        LOG_DEBUG("%s", message->payload.Dump().c_str());
+        VEHICLE_LOG_DBG(vehicle, "Waypoint %zu received:", waypoint_to_read);
+        VEHICLE_LOG_DBG(vehicle, "%s", message->payload.Dump().c_str());
     }
     Read_next();
 }
@@ -508,7 +522,7 @@ Mavlink_vehicle::Read_waypoints::Read_next()
         Fill_target_ids(ack);
         ack->type = mavlink::MAV_MISSION_RESULT::MAV_MISSION_ACCEPTED;
         Send_message(ack);
-        LOG_DEBUG("%lu waypoints received.", waypoints_total);
+        VEHICLE_LOG_DBG(vehicle, "%zu waypoints received.", waypoints_total);
         Disable();
     } else {
         mavlink::Pld_mission_request req;
@@ -602,7 +616,7 @@ bool
 Mavlink_vehicle::Telemetry::On_telemetry_check()
 {
     if (!telemetry_alive) {
-        LOG_INFO("Requesting telemetry...");
+        VEHICLE_LOG_INF(vehicle, "Requesting telemetry...");
         for (mavlink::MAV_DATA_STREAM id : {
             mavlink::MAV_DATA_STREAM::MAV_DATA_STREAM_ALL}) {
             mavlink::Pld_request_data_stream msg;
@@ -649,7 +663,7 @@ Mavlink_vehicle::Telemetry::On_estimate_link_quality()
     double error_quality = 0;
 
     /* Calculate link quality based on error rate. */
-    Mavlink_decoder::Stats new_stats = vehicle.mav_stream->Get_decoder().Get_stats();
+    auto new_stats = vehicle.mav_stream->Get_decoder().Get_stats();
     double ok_diff = new_stats.handled - prev_stats.handled;
     double err_diff = (new_stats.bad_checksum + new_stats.unknown_id) -
                       (prev_stats.bad_checksum + prev_stats.unknown_id);
@@ -807,7 +821,7 @@ Mavlink_vehicle::Telemetry::On_radio(
 
     if (prev_rx_errors_3dr > msg->payload->rxerrors) {
         /* Mavlink counter wrapped. */
-        LOG_DEBUG("3DR RADIO rxerrors counter wrapped (%u->%u)",
+        VEHICLE_LOG_DBG(vehicle, "3DR RADIO rxerrors counter wrapped (%u->%u)",
                 prev_rx_errors_3dr, msg->payload->rxerrors.Get());
         rx_errors_accum += msg->payload->rxerrors;
     } else {
@@ -820,7 +834,7 @@ bool
 Mavlink_vehicle::Clear_all_missions::Try()
 {
     if (!remaining_attempts--) {
-        LOG_WARN("Clear_all_missions all attempts failed.");
+        VEHICLE_LOG_WRN(vehicle, "Clear_all_missions all attempts failed.");
         Call_next_action(false);
         return false;
     }
@@ -844,17 +858,17 @@ Mavlink_vehicle::Clear_all_missions::On_mission_ack(
 
     if (message->payload->type != mavlink::MAV_MISSION_RESULT::MAV_MISSION_ACCEPTED) {
         /* Wrong code, retry? */
-        LOG_WARN("Mission clear all ACK bad result %d",
+        VEHICLE_LOG_WRN(vehicle, "Mission clear all ACK bad result %d",
                 message->payload->type.Get());
         return;
     }
-    LOG_INFO("All missions are cleared successfully.");
+    VEHICLE_LOG_INF(vehicle, "All missions are cleared successfully.");
     Call_next_action(true);
 }
 
 void
 Mavlink_vehicle::Clear_all_missions::Enable(
-        const vsm::Clear_all_missions& info)
+        const ugcs::vsm::Clear_all_missions& info)
 {
     this->info = info;
     remaining_attempts = ATTEMPTS;
@@ -897,6 +911,8 @@ Mavlink_vehicle::Mission_upload::Enable()
     attempts_total_left = ATTEMPTS_TOTAL;
     current_action = -1; /* Nothing requested yet. */
 
+    Dump_mission();
+
     Register_mavlink_handler<mavlink::MESSAGE_ID::MISSION_REQUEST>(
             &Mission_upload::On_mission_request,
             this,
@@ -909,6 +925,7 @@ void
 Mavlink_vehicle::Mission_upload::On_disable()
 {
     Unregister_mavlink_handlers();
+    final_ack_waiting = false;
 
     if (timer) {
         timer->Cancel();
@@ -920,7 +937,7 @@ bool
 Mavlink_vehicle::Mission_upload::Try()
 {
     if (!Next_attempt()) {
-        LOG_WARN("All task upload attempts failed.");
+        VEHICLE_LOG_WRN(vehicle, "All task upload attempts failed.");
         Call_next_action(false);
         return false;
     }
@@ -942,7 +959,7 @@ void
 Mavlink_vehicle::Mission_upload::On_mission_ack(
         mavlink::Message<mavlink::MESSAGE_ID::MISSION_ACK>::Ptr message)
 {
-    LOG_INFO("MISSION ACK: %s", message->payload.Dump().c_str());
+    VEHICLE_LOG_INF(vehicle, "MISSION ACK: %s", message->payload.Dump().c_str());
     if (message->payload->target_component != VSM_COMPONENT_ID ||
         message->payload->target_system != VSM_SYSTEM_ID) {
         /* Not for us, ignore. */
@@ -982,7 +999,7 @@ Mavlink_vehicle::Mission_upload::On_mission_request(
     } else if (current_action == message->payload->seq) {
         /* Request for the same item. */
         if (!Next_attempt()) {
-            LOG_INFO("No more attempts left for the same mission item.");
+            VEHICLE_LOG_INF(vehicle, "No more attempts left for the same mission item.");
             Call_next_action(false);
             return;
         }
@@ -995,7 +1012,9 @@ Mavlink_vehicle::Mission_upload::On_mission_request(
     }
 
     if (current_action + 1 ==
-        static_cast<ssize_t>(mission_items.size())) {
+        static_cast<ssize_t>(mission_items.size()) &&
+        !final_ack_waiting) {
+        final_ack_waiting = true;
         /* Last action requested, ack is awaited to finish the sequence. */
         Register_mavlink_handler<mavlink::MESSAGE_ID::MISSION_ACK>(
                     &Mission_upload::On_mission_ack,
@@ -1030,10 +1049,36 @@ Mavlink_vehicle::Mission_upload::Upload_current_action()
 {
     ASSERT(current_action < static_cast<ssize_t>(mission_items.size()));
     mavlink::Payload_base& msg = *mission_items[current_action];
-    LOG_INFO("Uploading [%s][seq %ld] to [%s:%s]",
+    VEHICLE_LOG_INF(vehicle, "Uploading [%s][seq %zu].",
             msg.Get_name(),
-            current_action,
-            vehicle.Get_model_name().c_str(),
-            vehicle.Get_serial_number().c_str());
+            current_action);
     Send_message(msg);
+}
+
+void
+Mavlink_vehicle::Mission_upload::Dump_mission()
+{
+    if (!vehicle.mission_dump_path) {
+        return;
+    }
+    std::string filename = *vehicle.mission_dump_path;
+
+    auto now = std::chrono::system_clock::now();
+    std::time_t t = std::chrono::system_clock::to_time_t(now);
+    char ts_buf[128];
+    std::strftime(ts_buf, sizeof(ts_buf), "_%Y%m%d-%H%M%S", std::localtime(&t));
+    filename += ts_buf;
+    std::unique_ptr<std::fstream> f = std::unique_ptr<std::fstream>
+        (new std::fstream(filename, std::ios_base::out|std::ios_base::app));
+    if (!f->is_open()) {
+        VEHICLE_LOG_WRN(vehicle, "Failed to open mission dumping file: %s", filename.c_str());
+    } else {
+        (*f) << std::ctime(&t) << "Dumping mission for [" << vehicle.Get_model_name() <<
+            ":" << vehicle.Get_serial_number() << "]:" << std::endl << std::endl;
+        for (auto& iter: mission_items) {
+            (*f) << iter->Dump() << std::endl;
+        }
+        (*f) << std::endl << "END OF THE MISSION DUMP" << std::endl << std::endl;
+        VEHICLE_LOG_INF(vehicle, "Mission dump file created: %s", filename.c_str());
+    }
 }

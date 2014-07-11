@@ -5,7 +5,7 @@
 #include <adsb_processor.h>
 #include <cpr_decoder.h>
 
-vsm::Singleton<Adsb_processor> Adsb_processor::singleton;
+ugcs::vsm::Singleton<Adsb_processor> Adsb_processor::singleton;
 
 const size_t Adsb_processor::MAX_AIRCRAFTS = 10000; /* 10K */
 
@@ -14,7 +14,7 @@ Airborne_cpr_decoder Adsb_processor::Aircraft::airborne_decoder;
 Surface_cpr_decoder Adsb_processor::Aircraft::surface_decoder;
 
 Adsb_processor::Adsb_processor() :
-        vsm::Request_processor("Adsb processor")
+        ugcs::vsm::Request_processor("Adsb processor")
 {
 
 }
@@ -24,7 +24,7 @@ Adsb_processor::Add_device(Adsb_device::Ptr device)
 {
     std::unique_lock<std::mutex> lock(mutex);
     if (aircrafts.find(device) != aircrafts.end()) {
-        VSM_EXCEPTION(vsm::Invalid_op_exception, "ADS-B device already added");
+        VSM_EXCEPTION(ugcs::vsm::Invalid_op_exception, "ADS-B device already added");
     }
     Adsb_device_ctx& ctx = aircrafts.emplace(device, Adsb_device_ctx()).first->second;
     if (_initiate_reading) {
@@ -37,14 +37,14 @@ Adsb_processor::Reports_stream::Reports_stream(Adsb_processor::Ptr processor) :
 {
 }
 
-vsm::Operation_waiter
+ugcs::vsm::Operation_waiter
 Adsb_processor::Reports_stream::Read(
         Report_handler handler,
-        vsm::Request_completion_context::Ptr ctx)
+        ugcs::vsm::Request_completion_context::Ptr ctx)
 {
     auto proc = processor.lock();
     if (!proc) {
-        VSM_EXCEPTION(vsm::Invalid_param_exception, "Processor already destroyed.");
+        VSM_EXCEPTION(ugcs::vsm::Invalid_param_exception, "Processor already destroyed.");
     }
     auto req = Read_request::Create();
     req->Set_processing_handler(Make_callback(
@@ -68,7 +68,7 @@ Adsb_processor::Reports_stream::Close()
 {
     auto proc = processor.lock();
     if (!proc) {
-        VSM_EXCEPTION(vsm::Invalid_param_exception, "Processor already destroyed.");
+        VSM_EXCEPTION(ugcs::vsm::Invalid_param_exception, "Processor already destroyed.");
     }
     auto req = Request::Create();
     req->Set_processing_handler(
@@ -109,7 +109,7 @@ Adsb_processor::Reports_stream::On_read(Read_request::Ptr request)
 }
 
 void
-Adsb_processor::Reports_stream::Push_report(const vsm::Adsb_report& report)
+Adsb_processor::Reports_stream::Push_report(const ugcs::vsm::Adsb_report& report)
 {
     if (reports.size() < MAX_PENDING) {
         reports.push(report);
@@ -162,12 +162,12 @@ Adsb_processor::Aircraft::State_to_str(State state)
     case State::INITIALIZATION: return "INITIALIZATION";
     case State::ACQUISITION: return "ACQUISITION";
     case State::TRACKING: return "TRACKING";
-    default: VSM_EXCEPTION(vsm::Internal_error_exception, "Unknown aircraft state");
+    default: VSM_EXCEPTION(ugcs::vsm::Internal_error_exception, "Unknown aircraft state");
     }
 }
 
 Adsb_processor::Aircraft::Aircraft(
-        const vsm::Adsb_frame::ICAO_address& address,
+        const ugcs::vsm::Adsb_frame::ICAO_address& address,
         Destroy_handler destory_handler,
         Report_handler report_handler) :
     address(address),
@@ -188,8 +188,8 @@ Adsb_processor::Aircraft::Disable()
 
 void
 Adsb_processor::Aircraft::Process(
-        const vsm::Adsb_frame::Airborne_position_message& msg,
-        vsm::Request_completion_context::Ptr& completion_ctx)
+        const ugcs::vsm::Adsb_frame::Airborne_position_message& msg,
+        ugcs::vsm::Request_completion_context::Ptr& completion_ctx)
 {
     if (airborne && !*airborne) {
         /* Switch from on ground to airborne. Reinit. */
@@ -207,8 +207,8 @@ Adsb_processor::Aircraft::Process(
 
 void
 Adsb_processor::Aircraft::Process(
-        const vsm::Adsb_frame::Surface_position_message& msg,
-        vsm::Request_completion_context::Ptr& completion_ctx)
+        const ugcs::vsm::Adsb_frame::Surface_position_message& msg,
+        ugcs::vsm::Request_completion_context::Ptr& completion_ctx)
 {
     if (airborne && *airborne) {
         /* Switch from from airborne to surface. Reinit. */
@@ -229,8 +229,8 @@ Adsb_processor::Aircraft::Process(
 
 void
 Adsb_processor::Aircraft::Process(
-        const vsm::Adsb_frame::Aircraft_id_and_cat_message& msg,
-        vsm::Request_completion_context::Ptr& completion_ctx)
+        const ugcs::vsm::Adsb_frame::Aircraft_id_and_cat_message& msg,
+        ugcs::vsm::Request_completion_context::Ptr& completion_ctx)
 {
     bool present = ident ? true : false;
 
@@ -256,8 +256,8 @@ Adsb_processor::Aircraft::Process(
 
 void
 Adsb_processor::Aircraft::Process(
-        const vsm::Adsb_frame::Airborne_velocity_message& message,
-        vsm::Request_completion_context::Ptr& completion_context)
+        const ugcs::vsm::Adsb_frame::Airborne_velocity_message& message,
+        ugcs::vsm::Request_completion_context::Ptr& completion_context)
 {
     if (message.Is_horizontal_speed_available()) {
         horizontal_speed = message.Get_horizontal_speed();
@@ -306,8 +306,8 @@ Adsb_processor::Aircraft::Set_state(Adsb_processor::Aircraft::State new_state)
 
     state = new_state;
 
-    even = vsm::Adsb_frame::Airborne_position_message();
-    odd = vsm::Adsb_frame::Airborne_position_message();
+    even = ugcs::vsm::Adsb_frame::Airborne_position_message();
+    odd = ugcs::vsm::Adsb_frame::Airborne_position_message();
 
     switch (new_state) {
     case Aircraft::State::INITIALIZATION:
@@ -334,7 +334,7 @@ Adsb_processor::Aircraft::Airborne_velocity_received()
 
 void
 Adsb_processor::Aircraft::Reschedule_timer(
-        vsm::Request_completion_context::Ptr& completion_ctx)
+        ugcs::vsm::Request_completion_context::Ptr& completion_ctx)
 {
     if (timer) {
         timer->Cancel();
@@ -356,7 +356,7 @@ Adsb_processor::Aircraft::Reschedule_timer(
         }
         break;
     }
-    timer = vsm::Timer_processor::Get_instance()->
+    timer = ugcs::vsm::Timer_processor::Get_instance()->
             Create_timer(interval,
                     Make_callback(
                             &Aircraft::Timer_handler,
@@ -367,7 +367,7 @@ Adsb_processor::Aircraft::Reschedule_timer(
 
 bool
 Adsb_processor::Aircraft::Timer_handler(
-        vsm::Request_completion_context::Ptr completion_ctx)
+        ugcs::vsm::Request_completion_context::Ptr completion_ctx)
 {
     LOG_INFO("Aircraft %s state [%s] timed out.",
             To_string().c_str(), State_to_str(state).c_str());
@@ -389,10 +389,10 @@ Adsb_processor::Aircraft::Timer_handler(
 
 bool
 Adsb_processor::Aircraft::Process_position(
-        const vsm::Adsb_frame::Position_message& pos,
+        const ugcs::vsm::Adsb_frame::Position_message& pos,
         const Cpr_decoder& decoder)
 {
-    vsm::Optional<double> distance_to_receiver;
+    ugcs::vsm::Optional<double> distance_to_receiver;
 
     if (pos.Get_CPR_format()) {
         odd = pos;
@@ -424,7 +424,7 @@ Adsb_processor::Aircraft::Process_position(
             if (second_global) {
                 /* Second global decode is OK, compare with recent local to agree. */
                 double distance =
-                        vsm::Wgs84_position(*recent_position).Distance(*second_global);
+                        ugcs::vsm::Wgs84_position(*recent_position).Distance(*second_global);
                 if (decoder.Check_global_local_distance(distance)) {
                     second_global_decode_done = true;
                     if (Airborne_velocity_received()) {
@@ -456,7 +456,7 @@ Adsb_processor::Aircraft::Process_position(
              * aircraft with the same ICAO address. For now, duplicate ICAO
              * addresses are not supported, because it is considered to be
              * a very rare situation. */
-            double distance = vsm::Wgs84_position(new_local_pos).Distance(*recent_position);
+            double distance = ugcs::vsm::Wgs84_position(new_local_pos).Distance(*recent_position);
             LOG_INFO("Aircraft %s position ignored, distance delta %f meters.",
                     To_string().c_str(), distance);
             return false;
@@ -473,7 +473,7 @@ void
 Adsb_processor::Aircraft::Generate_report()
 {
     ASSERT(recent_position);
-    report_handler(std::move(vsm::Adsb_report(address, ident, *recent_position, altitude, heading,
+    report_handler(std::move(ugcs::vsm::Adsb_report(address, ident, *recent_position, altitude, heading,
             horizontal_speed, vertical_speed)));
 }
 
@@ -486,10 +486,10 @@ Adsb_processor::Aircraft::Destroy()
 void
 Adsb_processor::On_enable()
 {
-    completion_ctx = vsm::Request_completion_context::Create("Adsb processor completion");
-    worker = vsm::Request_worker::Create(
+    completion_ctx = ugcs::vsm::Request_completion_context::Create("Adsb processor completion");
+    worker = ugcs::vsm::Request_worker::Create(
             "Adsb processor worker",
-            std::initializer_list<vsm::Request_container::Ptr>{
+            std::initializer_list<ugcs::vsm::Request_container::Ptr>{
                 completion_ctx, Shared_from_this()});
     completion_ctx->Enable();
     worker->Enable();
@@ -559,29 +559,29 @@ Adsb_processor::Schedule_frame_read(
 
 void
 Adsb_processor::Adsb_frame_received(
-        vsm::Io_buffer::Ptr buffer,
-        vsm::Io_result result,
+        ugcs::vsm::Io_buffer::Ptr buffer,
+        ugcs::vsm::Io_result result,
         Adsb_device::Ptr device)
 {
     auto ctx_iter = aircrafts.find(device);
     ASSERT(ctx_iter != aircrafts.end());
 
-    if (result == vsm::Io_result::OK) {
+    if (result == ugcs::vsm::Io_result::OK) {
         Schedule_frame_read(device, ctx_iter->second);
-        if (buffer->Get_length() == vsm::Adsb_frame::SIZE) {
-            vsm::Adsb_frame::Ptr frame = vsm::Adsb_frame::Create(buffer);
+        if (buffer->Get_length() == ugcs::vsm::Adsb_frame::SIZE) {
+            ugcs::vsm::Adsb_frame::Ptr frame = ugcs::vsm::Adsb_frame::Create(buffer);
             if (!frame->Verify_checksum()) {
                 LOG_DEBUG("ADS-B frame dropped, bad checksum.");
                 return;
             }
             switch (frame->Get_DF()) {
-            case vsm::Adsb_frame::Downlink_format::DF_17:
+            case ugcs::vsm::Adsb_frame::Downlink_format::DF_17:
                 Process_DF_17(frame, device);
                 break;
-            case vsm::Adsb_frame::Downlink_format::DF_18:
+            case ugcs::vsm::Adsb_frame::Downlink_format::DF_18:
                 Process_DF_18(frame, device);
                 break;
-            case vsm::Adsb_frame::Downlink_format::DF_19:
+            case ugcs::vsm::Adsb_frame::Downlink_format::DF_19:
                 Process_DF_19(frame, device);
                 break;
             default:
@@ -607,7 +607,7 @@ Adsb_processor::Adsb_frame_received(
 Adsb_processor::Aircraft::Ptr
 Adsb_processor::Lookup_aircarft(
         const Adsb_device::Ptr& device,
-        const vsm::Adsb_frame::ICAO_address& address,
+        const ugcs::vsm::Adsb_frame::ICAO_address& address,
         bool check_limit)
 {
     Aircraft::Ptr acraft;
@@ -636,7 +636,7 @@ Adsb_processor::Lookup_aircarft(
                 Make_callback(
                         &Adsb_processor::Aircraft_report,
                         Shared_from_this(),
-                        vsm::Adsb_report()));
+                        ugcs::vsm::Adsb_report()));
 
 
         map[address] = acraft;
@@ -652,7 +652,7 @@ Adsb_processor::Lookup_aircarft(
 void
 Adsb_processor::Aircraft_destroyed(
         Adsb_device::Ptr device,
-        vsm::Adsb_frame::ICAO_address address)
+        ugcs::vsm::Adsb_frame::ICAO_address address)
 {
     auto ctx = aircrafts.find(device);
     ASSERT(ctx != aircrafts.end());
@@ -667,7 +667,7 @@ Adsb_processor::Aircraft_destroyed(
 }
 
 void
-Adsb_processor::Aircraft_report(vsm::Adsb_report report)
+Adsb_processor::Aircraft_report(ugcs::vsm::Adsb_report report)
 {
     for(auto& stream: streams) {
         stream->Push_report(report);
@@ -675,20 +675,20 @@ Adsb_processor::Aircraft_report(vsm::Adsb_report report)
 }
 
 void
-Adsb_processor::Process_DF_17(vsm::Adsb_frame::Ptr& frame, Adsb_device::Ptr& device)
+Adsb_processor::Process_DF_17(ugcs::vsm::Adsb_frame::Ptr& frame, Adsb_device::Ptr& device)
 {
     /* All DF_17 frames has ME field. */
     Process_ME_field(frame, device);
 }
 
 void
-Adsb_processor::Process_DF_18(vsm::Adsb_frame::Ptr& frame, Adsb_device::Ptr& device)
+Adsb_processor::Process_DF_18(ugcs::vsm::Adsb_frame::Ptr& frame, Adsb_device::Ptr& device)
 {
     /* Filter frames based on CF which have ME field. */
     switch (frame->Get_CF()) {
-    case vsm::Adsb_frame::CF_values::CF_0:
-    case vsm::Adsb_frame::CF_values::CF_1:
-    case vsm::Adsb_frame::CF_values::CF_6:
+    case ugcs::vsm::Adsb_frame::CF_values::CF_0:
+    case ugcs::vsm::Adsb_frame::CF_values::CF_1:
+    case ugcs::vsm::Adsb_frame::CF_values::CF_6:
         Process_ME_field(frame, device);
         break;
     default:
@@ -697,11 +697,11 @@ Adsb_processor::Process_DF_18(vsm::Adsb_frame::Ptr& frame, Adsb_device::Ptr& dev
 }
 
 void
-Adsb_processor::Process_DF_19(vsm::Adsb_frame::Ptr& frame, Adsb_device::Ptr& device)
+Adsb_processor::Process_DF_19(ugcs::vsm::Adsb_frame::Ptr& frame, Adsb_device::Ptr& device)
 {
     /* Filter frames based on AF which have ME field. */
     switch (frame->Get_AF()) {
-    case vsm::Adsb_frame::AF_values::AF_0:
+    case ugcs::vsm::Adsb_frame::AF_values::AF_0:
         Process_ME_field(frame, device);
         break;
     default:
@@ -710,23 +710,23 @@ Adsb_processor::Process_DF_19(vsm::Adsb_frame::Ptr& frame, Adsb_device::Ptr& dev
 }
 
 void
-Adsb_processor::Process_ME_field(vsm::Adsb_frame::Ptr& frame, Adsb_device::Ptr& device)
+Adsb_processor::Process_ME_field(ugcs::vsm::Adsb_frame::Ptr& frame, Adsb_device::Ptr& device)
 {
     /* Message type shortcut. */
-    using Type = vsm::Adsb_frame::ME_message::Type;
+    using Type = ugcs::vsm::Adsb_frame::ME_message::Type;
 
     switch (frame->Get_ME_type()) {
     case Type::AIRCRAFT_ID_AND_CAT_A_4:
     case Type::AIRCRAFT_ID_AND_CAT_B_3:
     case Type::AIRCRAFT_ID_AND_CAT_C_2:
     case Type::AIRCRAFT_ID_AND_CAT_D_1:
-        Process_ME_message<vsm::Adsb_frame::Aircraft_id_and_cat_message>(frame, device);
+        Process_ME_message<ugcs::vsm::Adsb_frame::Aircraft_id_and_cat_message>(frame, device);
         break;
     case Type::SURFACE_POSITION_5:
     case Type::SURFACE_POSITION_6:
     case Type::SURFACE_POSITION_7:
     case Type::SURFACE_POSITION_8:
-        Process_ME_message<vsm::Adsb_frame::Surface_position_message>(frame, device);
+        Process_ME_message<ugcs::vsm::Adsb_frame::Surface_position_message>(frame, device);
         break;
     case Type::AIRBORNE_POSITION_9:
     case Type::AIRBORNE_POSITION_10:
@@ -741,7 +741,7 @@ Adsb_processor::Process_ME_field(vsm::Adsb_frame::Ptr& frame, Adsb_device::Ptr& 
     case Type::AIRBORNE_POSITION_20:
     case Type::AIRBORNE_POSITION_21:
     case Type::AIRBORNE_POSITION_22:
-        Process_ME_message<vsm::Adsb_frame::Airborne_position_message>(frame, device);
+        Process_ME_message<ugcs::vsm::Adsb_frame::Airborne_position_message>(frame, device);
         break;
     case Type::AIRBORNE_VELOCITY_19:
         Process_airborne_velocity_message(frame, device);
@@ -771,15 +771,15 @@ Adsb_processor::Process_ME_field(vsm::Adsb_frame::Ptr& frame, Adsb_device::Ptr& 
 
 void
 Adsb_processor::Process_airborne_velocity_message(
-        vsm::Adsb_frame::Ptr& frame, Adsb_device::Ptr& device)
+        ugcs::vsm::Adsb_frame::Ptr& frame, Adsb_device::Ptr& device)
 {
     /* Additional validation for sub-type. */
     auto sub_type = frame->Get_ME_subtype();
-    if (sub_type == vsm::Adsb_frame::ME_message::Sub_type::TYPE_1 ||
-        sub_type == vsm::Adsb_frame::ME_message::Sub_type::TYPE_2 ||
-        sub_type == vsm::Adsb_frame::ME_message::Sub_type::TYPE_3 ||
-        sub_type == vsm::Adsb_frame::ME_message::Sub_type::TYPE_4) {
-        Process_ME_message<vsm::Adsb_frame::Airborne_velocity_message>(frame, device);
+    if (sub_type == ugcs::vsm::Adsb_frame::ME_message::Sub_type::TYPE_1 ||
+        sub_type == ugcs::vsm::Adsb_frame::ME_message::Sub_type::TYPE_2 ||
+        sub_type == ugcs::vsm::Adsb_frame::ME_message::Sub_type::TYPE_3 ||
+        sub_type == ugcs::vsm::Adsb_frame::ME_message::Sub_type::TYPE_4) {
+        Process_ME_message<ugcs::vsm::Adsb_frame::Airborne_velocity_message>(frame, device);
     }
 }
 

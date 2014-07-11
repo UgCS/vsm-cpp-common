@@ -5,9 +5,9 @@
 #include <UnitTest++.h>
 #include <adsb_processor.h>
 #include <micro_adsb_device.h>
-#include <vsm/file_processor.h>
+#include <ugcs/vsm/file_processor.h>
 
-using namespace vsm;
+using namespace ugcs::vsm;
 
 class Adsb_processor_tester: public Adsb_processor
 {

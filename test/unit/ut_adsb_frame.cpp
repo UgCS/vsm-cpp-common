@@ -3,11 +3,11 @@
 // See LICENSE file for license details.
 
 /** Tests for ADS-B frame encoded values. */
-#include <vsm/adsb_frame.h>
+#include <ugcs/vsm/adsb_frame.h>
 #include <fstream>
 #include <UnitTest++.h>
 
-using namespace vsm;
+using namespace ugcs::vsm;
 
 #define FILL_GILLHAM_CODE(                                                       \
     A1_, A2_, A4_, B1_, B2_, B4_, C1_, C2_, C4_, D1_, D2_, D4_, frame_)          \

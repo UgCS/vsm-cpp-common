@@ -4,15 +4,15 @@
 
 #include <adsb_device_processor.h>
 
-vsm::Singleton<Adsb_device_processor> Adsb_device_processor::singleton;
+ugcs::vsm::Singleton<Adsb_device_processor> Adsb_device_processor::singleton;
 
 Adsb_device_processor::Adsb_device_processor() :
-        vsm::Request_processor("Adsb device processor")
+        ugcs::vsm::Request_processor("Adsb device processor")
 {
 
 }
 
-vsm::Request_completion_context::Ptr
+ugcs::vsm::Request_completion_context::Ptr
 Adsb_device_processor::Get_completion_context()
 {
     return completion_ctx;
@@ -21,8 +21,8 @@ Adsb_device_processor::Get_completion_context()
 void
 Adsb_device_processor::On_enable()
 {
-    completion_ctx = vsm::Request_completion_context::Create("Adsb device processor completion");
-    worker = vsm::Request_worker::Create(
+    completion_ctx = ugcs::vsm::Request_completion_context::Create("Adsb device processor completion");
+    worker = ugcs::vsm::Request_worker::Create(
             "Adsb device processor worker",
             std::initializer_list<Request_container::Ptr>
             {

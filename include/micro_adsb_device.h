@@ -9,8 +9,8 @@
 #define _MICRO_ADSB_DEVICE_H_
 
 #include <adsb_device.h>
-#include <vsm/io_stream.h>
-#include <vsm/text_stream_filter.h>
+#include <ugcs/vsm/io_stream.h>
+#include <ugcs/vsm/text_stream_filter.h>
 
 /** Micro-ADSB device implementation. */
 class Micro_adsb_device: public Adsb_device {
@@ -22,29 +22,29 @@ public:
      * @param close_stream Should the stream be closed when device is disabled.
      */
     Micro_adsb_device(
-            vsm::Io_stream::Ref stream, bool close_stream = true);
+            ugcs::vsm::Io_stream::Ref stream, bool close_stream = true);
 
     /** Default prototype for read version operation completion handler. */
-    typedef vsm::Callback_proxy<void, uint8_t, vsm::Io_result> Read_version_handler;
+    typedef ugcs::vsm::Callback_proxy<void, uint8_t, ugcs::vsm::Io_result> Read_version_handler;
 
     /** Default prototype for init frames receiving completion handler. */
-    typedef vsm::Callback_proxy<void, vsm::Io_result> Init_frames_receiving_handler;
+    typedef ugcs::vsm::Callback_proxy<void, ugcs::vsm::Io_result> Init_frames_receiving_handler;
 
     /** Builder for read version handler. */
-    DEFINE_CALLBACK_BUILDER(Make_read_version_handler, (uint8_t, vsm::Io_result),
-            (0, vsm::Io_result::OTHER_FAILURE));
+    DEFINE_CALLBACK_BUILDER(Make_read_version_handler, (uint8_t, ugcs::vsm::Io_result),
+            (0, ugcs::vsm::Io_result::OTHER_FAILURE));
 
     /** Builder for initialize frames receiving handler. */
     DEFINE_CALLBACK_BUILDER(Make_init_frames_receiving_handler,
-            (vsm::Io_result), (vsm::Io_result::OTHER_FAILURE));
+            (ugcs::vsm::Io_result), (ugcs::vsm::Io_result::OTHER_FAILURE));
 
     /** Read firmware version of the device. */
-    vsm::Operation_waiter
-    Read_version(Read_version_handler, vsm::Request_completion_context::Ptr);
+    ugcs::vsm::Operation_waiter
+    Read_version(Read_version_handler, ugcs::vsm::Request_completion_context::Ptr);
 
     /** Initialize frames receiving. */
-    vsm::Operation_waiter
-    Init_frames_receiving(Init_frames_receiving_handler, vsm::Request_completion_context::Ptr);
+    ugcs::vsm::Operation_waiter
+    Init_frames_receiving(Init_frames_receiving_handler, ugcs::vsm::Request_completion_context::Ptr);
 
 private:
 
@@ -65,19 +65,19 @@ private:
     /** Connection with the Micro ADS-B USB dongle. Supposed to be serial stream
      * but actually it does not matter here.
      */
-    vsm::Io_stream::Ref stream;
+    ugcs::vsm::Io_stream::Ref stream;
 
     /** Should the stream be closed on disable. */
     bool close_stream;
 
     /** Text stream filter for data parsing. */
-    vsm::Text_stream_filter::Ptr filter;
+    ugcs::vsm::Text_stream_filter::Ptr filter;
 
     /** Current read version handler, if any. Only one at a time. */
     Read_version_handler read_version_handler;
 
     /** Current read version request, if any. */
-    vsm::Request::Ptr read_version_request;
+    ugcs::vsm::Request::Ptr read_version_request;
 
     /** Number of processed read version attempts. */
     size_t read_version_attempts;
@@ -86,13 +86,13 @@ private:
     Init_frames_receiving_handler init_frames_receiving_handler;
 
     /** Current init frames receving request. */
-    vsm::Request::Ptr init_frames_receiving_request;
+    ugcs::vsm::Request::Ptr init_frames_receiving_request;
 
     /** Number of processed init frames receiving attempts. */
     size_t init_frames_receiving_attempts;
 
     /** Scheduled write operations. */
-    std::queue<vsm::Operation_waiter> write_ops;
+    std::queue<ugcs::vsm::Operation_waiter> write_ops;
 
     /** Enable the device. */
     virtual void
@@ -108,11 +108,11 @@ private:
 
     /** Write completion handler. */
     void
-    On_write_completed(vsm::Io_result);
+    On_write_completed(ugcs::vsm::Io_result);
 
     /** Correctly formatted version response handler. */
     bool
-    Read_version_handler_cb(regex::smatch*, vsm::Text_stream_filter::Lines_list*, vsm::Io_result);
+    Read_version_handler_cb(regex::smatch*, ugcs::vsm::Text_stream_filter::Lines_list*, ugcs::vsm::Io_result);
 
     /** Read version handler in the processor context. */
     void
@@ -124,12 +124,12 @@ private:
 
     /** Complete read version handler request. */
     void
-    Complete_read_version_request(uint8_t, vsm::Io_result);
+    Complete_read_version_request(uint8_t, ugcs::vsm::Io_result);
 
     /** Correctly formatted init frames receiving response handler. */
     bool
     Init_frames_receiving_handler_cb(regex::smatch*,
-            vsm::Text_stream_filter::Lines_list*, vsm::Io_result);
+            ugcs::vsm::Text_stream_filter::Lines_list*, ugcs::vsm::Io_result);
 
     /** Init frames receiving handler in the processor context. */
     void
@@ -137,7 +137,7 @@ private:
 
     /** Complete init frames receiving request. */
     void
-    Complete_init_frames_receiving_request(vsm::Io_result);
+    Complete_init_frames_receiving_request(ugcs::vsm::Io_result);
 
     /** Try to init frames receiving. */
     void
@@ -145,7 +145,7 @@ private:
 
     /** Correctly formatted frame handler. */
     bool
-    Read_frame_handler_cb(regex::smatch*, vsm::Text_stream_filter::Lines_list*, vsm::Io_result);
+    Read_frame_handler_cb(regex::smatch*, ugcs::vsm::Text_stream_filter::Lines_list*, ugcs::vsm::Io_result);
 };
 
 #endif /* _MICRO_ADSB_DEVICE_H_ */

@@ -9,9 +9,9 @@
 #ifndef RED_BUTTON_PROCESSOR_H_
 #define RED_BUTTON_PROCESSOR_H_
 
-#include <vsm/vsm.h>
+#include <ugcs/vsm/vsm.h>
 
-class Red_button_processor: public vsm::Request_processor {
+class Red_button_processor: public ugcs::vsm::Request_processor {
     DEFINE_COMMON_CLASS(Red_button_processor, Request_container)
 public:
     /** Button event handler.
@@ -21,13 +21,13 @@ public:
      * @return true to continue events reception, false to remove registered
      *      handler from the processor.
      */
-    typedef vsm::Callback_proxy<bool, bool, vsm::Io_result> Event_handler;
+    typedef ugcs::vsm::Callback_proxy<bool, bool, ugcs::vsm::Io_result> Event_handler;
 
     /** Builder for event handler. */
     DEFINE_CALLBACK_BUILDER(
             Make_event_handler,
-            (bool, vsm::Io_result),
-            (false, vsm::Io_result::OK))
+            (bool, ugcs::vsm::Io_result),
+            (false, ugcs::vsm::Io_result::OK))
 
     Red_button_processor();
 
@@ -38,9 +38,9 @@ public:
      * @param comp_ctx Context for handler invocation. nullptr indicates that
      *      the processor completion context will be used.
      */
-    vsm::Operation_waiter
+    ugcs::vsm::Operation_waiter
     Listen(Event_handler handler,
-           vsm::Request_completion_context::Ptr ctx = nullptr);
+           ugcs::vsm::Request_completion_context::Ptr ctx = nullptr);
 
     bool
     Is_connected() const
@@ -77,21 +77,21 @@ private:
         RELEASED = 0x17
     };
 
-    vsm::Request_completion_context::Ptr comp_ctx;
-    vsm::Request_worker::Ptr worker;
+    ugcs::vsm::Request_completion_context::Ptr comp_ctx;
+    ugcs::vsm::Request_worker::Ptr worker;
 
     /** Button device stream. */
-    vsm::Hid_processor::Stream::Ref rb_stream;
-    vsm::Timer_processor::Timer::Ptr poll_timer, connect_timer;
+    ugcs::vsm::Hid_processor::Stream::Ref rb_stream;
+    ugcs::vsm::Timer_processor::Timer::Ptr poll_timer, connect_timer;
     /** Current button state. */
     volatile State_code cur_state = State_code::INITIAL;
 
     /** Represents registered listener. */
     struct Listener {
-        vsm::Request::Ptr req;
+        ugcs::vsm::Request::Ptr req;
         Event_handler handler;
 
-        Listener(vsm::Request::Ptr req, Event_handler handler):
+        Listener(ugcs::vsm::Request::Ptr req, Event_handler handler):
             req(req), handler(handler)
         {}
     };
@@ -110,7 +110,7 @@ private:
     std::list<Listener> listeners;
 
     /** Fixed reset and poll device requests. */
-    vsm::Io_buffer::Ptr reset_request, poll_request;
+    ugcs::vsm::Io_buffer::Ptr reset_request, poll_request;
 
     /** Handle processor enabling. */
     virtual void
@@ -123,9 +123,9 @@ private:
     /** Create request for the events starting from the specified next
      * event (which can be EVENT_ID_NONE to process only new events).
      */
-    vsm::Request::Ptr
+    ugcs::vsm::Request::Ptr
     Create_listen_request(Event_handler handler,
-                          vsm::Request_completion_context::Ptr ctx,
+                          ugcs::vsm::Request_completion_context::Ptr ctx,
                           Event_id next_event = EVENT_ID_NONE);
 
     /** @param next_event Points to next required event ID. May be EVENT_ID_NONE
@@ -133,16 +133,16 @@ private:
      * before the request is completed.
      */
     void
-    Handle_listen_request(vsm::Request::Ptr req, Event_handler handler,
+    Handle_listen_request(ugcs::vsm::Request::Ptr req, Event_handler handler,
                           Event_id *next_event);
 
     void
     Handle_event(Event_handler handler,
-                 vsm::Request_completion_context::Ptr ctx,
+                 ugcs::vsm::Request_completion_context::Ptr ctx,
                  Event_id next_event);
 
     void
-    Read_handler(vsm::Io_buffer::Ptr data, vsm::Io_result result);
+    Read_handler(ugcs::vsm::Io_buffer::Ptr data, ugcs::vsm::Io_result result);
 
     bool
     Poll_timer();
@@ -180,7 +180,7 @@ private:
     Start_polling();
 
     void
-    Fire_event_handler(Event_id event_id, vsm::Request::Ptr req,
+    Fire_event_handler(Event_id event_id, ugcs::vsm::Request::Ptr req,
                        Event_handler handler);
 
     /** Fire all queued handlers for the last event. */

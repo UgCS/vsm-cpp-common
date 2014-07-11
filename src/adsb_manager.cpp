@@ -3,12 +3,12 @@
 // See LICENSE file for license details.
 
 #include <adsb_manager.h>
-#include <vsm/transport_detector.h>
+#include <ugcs/vsm/transport_detector.h>
 #include <adsb_processor.h>
-#include <vsm/cucs_processor.h>
+#include <ugcs/vsm/cucs_processor.h>
 
 Adsb_manager::Adsb_manager(const std::string& prefix) :
-        vsm::Request_processor("Adsb manager processor"),
+        ugcs::vsm::Request_processor("Adsb manager processor"),
         config_prefix(prefix)
 {
 }
@@ -16,12 +16,12 @@ Adsb_manager::Adsb_manager(const std::string& prefix) :
 void
 Adsb_manager::On_enable()
 {
-    worker = vsm::Request_worker::Create(
+    worker = ugcs::vsm::Request_worker::Create(
             "Adsb manager worker",
-            std::initializer_list<vsm::Request_container::Ptr>{Shared_from_this()});
+            std::initializer_list<ugcs::vsm::Request_container::Ptr>{Shared_from_this()});
     worker->Enable();
 
-    auto req = vsm::Request::Create();
+    auto req = ugcs::vsm::Request::Create();
     req->Set_processing_handler(
             Make_callback(
                     &Adsb_manager::Process_on_enable,
@@ -32,14 +32,14 @@ Adsb_manager::On_enable()
 }
 
 void
-Adsb_manager::Process_on_enable(vsm::Request::Ptr request)
+Adsb_manager::Process_on_enable(ugcs::vsm::Request::Ptr request)
 {
     reports_stream = Adsb_processor::Get_instance()->Open_stream();
     Read_adsb_report();
 
-    vsm::Transport_detector::Get_instance()->Add_detector(
+    ugcs::vsm::Transport_detector::Get_instance()->Add_detector(
             config_prefix,
-            vsm::Transport_detector::Make_connect_handler(
+            ugcs::vsm::Transport_detector::Make_connect_handler(
                     &Adsb_manager::On_new_connection, Shared_from_this()),
                     Shared_from_this());
 
@@ -49,7 +49,7 @@ Adsb_manager::Process_on_enable(vsm::Request::Ptr request)
 void
 Adsb_manager::On_disable()
 {
-    auto req = vsm::Request::Create();
+    auto req = ugcs::vsm::Request::Create();
     req->Set_processing_handler(
             Make_callback(
                     &Adsb_manager::Process_on_disable,
@@ -63,7 +63,7 @@ Adsb_manager::On_disable()
 }
 
 void
-Adsb_manager::Process_on_disable(vsm::Request::Ptr request)
+Adsb_manager::Process_on_disable(ugcs::vsm::Request::Ptr request)
 {
     for(auto& iter: streams_under_detection) {
         /* Disable device. */
@@ -76,7 +76,11 @@ Adsb_manager::Process_on_disable(vsm::Request::Ptr request)
 }
 
 void
-Adsb_manager::On_new_connection(std::string, int, vsm::Io_stream::Ref stream)
+Adsb_manager::On_new_connection(
+		std::string,
+		int,
+		ugcs::vsm::Socket_address::Ptr,
+		ugcs::vsm::Io_stream::Ref stream)
 {
     Micro_adsb_device::Ptr device = Micro_adsb_device::Create(stream, false);
     device->Enable();
@@ -100,20 +104,20 @@ Adsb_manager::On_new_connection(std::string, int, vsm::Io_stream::Ref stream)
 
 void
 Adsb_manager::On_micro_adsb_init_frames_receiving(
-        vsm::Io_result result,
+        ugcs::vsm::Io_result result,
         Micro_adsb_device::Ptr device,
-        vsm::Io_stream::Ref stream)
+        ugcs::vsm::Io_stream::Ref stream)
 {
     auto found = streams_under_detection.find(stream);
     ASSERT(found != streams_under_detection.end());
 
     streams_under_detection.erase(found);
 
-    if (result != vsm::Io_result::OK) {
+    if (result != ugcs::vsm::Io_result::OK) {
         LOG_DEBUG("MicroADS-B device not detected on [%s].",
                 stream->Get_name().c_str());
         device->Disable();
-        vsm::Transport_detector::Get_instance()->Protocol_not_detected(stream);
+        ugcs::vsm::Transport_detector::Get_instance()->Protocol_not_detected(stream);
     } else {
         LOG_INFO("[%s] detected (frames initialization succeeded).",
                 device->Get_name().c_str());
@@ -122,21 +126,21 @@ Adsb_manager::On_micro_adsb_init_frames_receiving(
 }
 
 void
-Adsb_manager::On_frame_received(vsm::Io_buffer::Ptr buffer,
-        vsm::Io_result result, Adsb_device::Ptr device, vsm::Io_stream::Ref stream)
+Adsb_manager::On_frame_received(ugcs::vsm::Io_buffer::Ptr buffer,
+        ugcs::vsm::Io_result result, Adsb_device::Ptr device, ugcs::vsm::Io_stream::Ref stream)
 {
     auto found = streams_under_detection.find(stream);
     ASSERT(found != streams_under_detection.end());
 
-    if (result != vsm::Io_result::OK) {
+    if (result != ugcs::vsm::Io_result::OK) {
         LOG_DEBUG("MicroADS-B device not detected on [%s].",
                 stream->Get_name().c_str());
         streams_under_detection.erase(found);
         device->Disable();
-        vsm::Transport_detector::Get_instance()->Protocol_not_detected(stream);
+        ugcs::vsm::Transport_detector::Get_instance()->Protocol_not_detected(stream);
         return;
-    } else if (buffer->Get_length() == vsm::Adsb_frame::SIZE) {
-        vsm::Adsb_frame::Ptr frame = vsm::Adsb_frame::Create(buffer);
+    } else if (buffer->Get_length() == ugcs::vsm::Adsb_frame::SIZE) {
+        ugcs::vsm::Adsb_frame::Ptr frame = ugcs::vsm::Adsb_frame::Create(buffer);
         if (frame->Verify_checksum()) {
             LOG_INFO("[%s] detected (valid frame received).",
                     device->Get_name().c_str());
@@ -157,9 +161,9 @@ Adsb_manager::On_frame_received(vsm::Io_buffer::Ptr buffer,
 }
 
 void
-Adsb_manager::On_adsb_report(vsm::Adsb_report report)
+Adsb_manager::On_adsb_report(ugcs::vsm::Adsb_report report)
 {
-    vsm::Cucs_processor::Get_instance()->Send_adsb_report(report);
+    ugcs::vsm::Cucs_processor::Get_instance()->Send_adsb_report(report);
     Read_adsb_report();
 }
 

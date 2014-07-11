@@ -8,10 +8,10 @@
 #ifndef _ADSB_DEVICE_H_
 #define _ADSB_DEVICE_H_
 
-#include <vsm/request_context.h>
-#include <vsm/io_stream.h>
+#include <ugcs/vsm/request_context.h>
+#include <ugcs/vsm/io_stream.h>
 #include <queue>
-#include <vsm/io_request.h>
+#include <ugcs/vsm/io_request.h>
 #include <adsb_device_processor.h>
 
 /** Base interface for a device capable of receiving raw ADS-B radio frames.
@@ -23,8 +23,8 @@ class Adsb_device: public std::enable_shared_from_this<Adsb_device> {
     DEFINE_COMMON_CLASS(Adsb_device, Adsb_device);
 public:
     /** Default prototype for read frame operation completion handler.
-     * vsm::Io_buffer is valid only if vsm::Io_result is OK. */
-    typedef vsm::Callback_proxy<void, vsm::Io_buffer::Ptr, vsm::Io_result> Read_frame_handler;
+     * ugcs::vsm::Io_buffer is valid only if ugcs::vsm::Io_result is OK. */
+    typedef ugcs::vsm::Callback_proxy<void, ugcs::vsm::Io_buffer::Ptr, ugcs::vsm::Io_result> Read_frame_handler;
 
     /** Maximum number of ADS-B frames which could be queued in the device. This
      * queue is overflowed, if the user does not read the frames quickly
@@ -46,8 +46,8 @@ public:
      * Read raw ADS-B frame, thats is including parity/checksum fields.
      * @param handler Handler of the read operation completion.
      */
-    vsm::Operation_waiter
-    Read_frame(Read_frame_handler handler, vsm::Request_completion_context::Ptr);
+    ugcs::vsm::Operation_waiter
+    Read_frame(Read_frame_handler handler, ugcs::vsm::Request_completion_context::Ptr);
 
     /** Get the name of the device which helps human to identify the physically
      * connected instance, for example "Micro ADS-B on [COM3]".
@@ -57,8 +57,8 @@ public:
 
     /** Builder for read frame handler. */
     DEFINE_CALLBACK_BUILDER(Make_read_frame_handler,
-            (vsm::Io_buffer::Ptr, vsm::Io_result),
-            (nullptr, vsm::Io_result::OTHER_FAILURE))
+            (ugcs::vsm::Io_buffer::Ptr, ugcs::vsm::Io_result),
+            (nullptr, ugcs::vsm::Io_result::OTHER_FAILURE))
 
     /** Return the number of the frames, which are lost due to the device queue
      * overflow. Method invocation clears the counter.
@@ -81,7 +81,7 @@ protected:
     /** Push new ADS-B frame to the device. Should be called from the
      * ADS-B device processor context only. */
     void
-    Push_frame(vsm::Io_buffer::Ptr);
+    Push_frame(ugcs::vsm::Io_buffer::Ptr);
 
     /** Close the device. All pending and new requests will be completed with
      * appropriate result code.
@@ -90,7 +90,7 @@ protected:
     Close();
 
     /** Get common completion context handled by ADS-B device processor. */
-    vsm::Request_completion_context::Ptr
+    ugcs::vsm::Request_completion_context::Ptr
     Get_completion_context();
 
     /** Get associated ADS-B device processor.
@@ -108,7 +108,7 @@ private:
 
     /** Process read request in a processor context. */
     void
-    On_read_frame(vsm::Read_request::Ptr);
+    On_read_frame(ugcs::vsm::Read_request::Ptr);
 
     /** Read request completion handler. */
     void
@@ -116,20 +116,20 @@ private:
 
     /** Process enable event in processor context. */
     void
-    Process_on_enable(vsm::Request::Ptr);
+    Process_on_enable(ugcs::vsm::Request::Ptr);
 
     /** Process disable event in processor context. */
     void
-    Process_on_disable(vsm::Request::Ptr);
+    Process_on_disable(ugcs::vsm::Request::Ptr);
 
     /** Name of the device. */
     const std::string name;
 
     /** Buffered frames, ready to be read. */
-    std::queue<vsm::Io_buffer::Ptr> frames;
+    std::queue<ugcs::vsm::Io_buffer::Ptr> frames;
 
     /** Pending read requests. */
-    std::queue<vsm::Read_request::Ptr> read_requests;
+    std::queue<ugcs::vsm::Read_request::Ptr> read_requests;
 
     /** Associated processor. */
     Adsb_device_processor::Weak_ptr processor;
@@ -138,7 +138,7 @@ private:
     bool closed = false;
 
     /** Current number of lost frames due to overflow. */
-    std::atomic_size_t lost_frames;
+    std::atomic_size_t lost_frames = { 0 };
 };
 
 #endif /* _ADSB_DEVICE_H_ */

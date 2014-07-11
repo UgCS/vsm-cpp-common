@@ -4,7 +4,7 @@
 
 #include <adsb_device.h>
 
-using namespace vsm;
+using namespace ugcs::vsm;
 
 Adsb_device::Adsb_device(const std::string& name) :
         name(name)
@@ -15,7 +15,7 @@ Adsb_device::Adsb_device(const std::string& name) :
 void
 Adsb_device::Enable()
 {
-    auto req = vsm::Request::Create();
+    auto req = ugcs::vsm::Request::Create();
     req->Set_processing_handler(
             Make_callback(
                     &Adsb_device::Process_on_enable,
@@ -23,14 +23,14 @@ Adsb_device::Enable()
                     req));
 
     Get_processor()->Submit_request(req);
-    vsm::Operation_waiter waiter(req);
+    ugcs::vsm::Operation_waiter waiter(req);
     waiter.Wait(false);
 }
 
 void
 Adsb_device::Disable()
 {
-    auto req = vsm::Request::Create();
+    auto req = ugcs::vsm::Request::Create();
     req->Set_processing_handler(
             Make_callback(
                     &Adsb_device::Process_on_disable,
@@ -41,10 +41,10 @@ Adsb_device::Disable()
     req->Wait_done(false);
 }
 
-vsm::Operation_waiter
+ugcs::vsm::Operation_waiter
 Adsb_device::Read_frame(
         Read_frame_handler handler,
-        vsm::Request_completion_context::Ptr ctx)
+        ugcs::vsm::Request_completion_context::Ptr ctx)
 {
     if (!handler) {
         VSM_EXCEPTION(Invalid_param_exception, "ADS-B frame handler is empty.");
@@ -52,7 +52,7 @@ Adsb_device::Read_frame(
 
     auto proc = Get_processor();
 
-    auto req = vsm::Read_request::Create(
+    auto req = ugcs::vsm::Read_request::Create(
             handler.template Get_arg<0>(), 0, 0, nullptr, 0,
             handler.template Get_arg<1>());
 
@@ -86,7 +86,7 @@ Adsb_device::Get_lost_frames()
 }
 
 void
-Adsb_device::Push_frame(vsm::Io_buffer::Ptr frame)
+Adsb_device::Push_frame(ugcs::vsm::Io_buffer::Ptr frame)
 {
     if (closed) {
         Close();
@@ -110,7 +110,7 @@ Adsb_device::Push_read_queue()
         auto lock = req->Lock();
         if (!req->Is_done()) {
             req->Set_buffer_arg(frames.front(), lock);
-            req->Set_result_arg(vsm::Io_result::OK, lock);
+            req->Set_result_arg(ugcs::vsm::Io_result::OK, lock);
             frames.pop();
         }
         lock.unlock();
@@ -132,14 +132,14 @@ Adsb_device::Close()
     while (!read_requests.empty()) {
         auto req = read_requests.front();
         read_requests.pop();
-        req->Set_result_arg(vsm::Io_result::CLOSED);
+        req->Set_result_arg(ugcs::vsm::Io_result::CLOSED);
         req->Complete();
     }
 
     frames = std::move(decltype(frames)());
 }
 
-vsm::Request_completion_context::Ptr
+ugcs::vsm::Request_completion_context::Ptr
 Adsb_device::Get_completion_context()
 {
     return Get_processor()->Get_completion_context();
@@ -156,7 +156,7 @@ Adsb_device::Get_processor()
 }
 
 void
-Adsb_device::On_read_frame(vsm::Read_request::Ptr request)
+Adsb_device::On_read_frame(ugcs::vsm::Read_request::Ptr request)
 {
     if (closed) {
         Close();
@@ -173,14 +173,14 @@ Adsb_device::On_read_completed(Read_frame_handler handler)
 }
 
 void
-Adsb_device::Process_on_enable(vsm::Request::Ptr request)
+Adsb_device::Process_on_enable(ugcs::vsm::Request::Ptr request)
 {
     On_enable();
     request->Complete();
 }
 
 void
-Adsb_device::Process_on_disable(vsm::Request::Ptr request)
+Adsb_device::Process_on_disable(ugcs::vsm::Request::Ptr request)
 {
     while(!read_requests.empty()) {
         read_requests.front()->Abort();

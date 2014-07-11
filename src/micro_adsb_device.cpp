@@ -18,28 +18,28 @@ line_handler(const std::string* str)
 }
 
 Micro_adsb_device::Micro_adsb_device(
-        vsm::Io_stream::Ref stream, bool close_stream) :
+        ugcs::vsm::Io_stream::Ref stream, bool close_stream) :
         Adsb_device("Micro ADS-B on [" + stream->Get_name() + "]"),
         stream(stream), close_stream(close_stream),
-        filter(vsm::Text_stream_filter::Create(stream, Get_completion_context()))
+        filter(ugcs::vsm::Text_stream_filter::Create(stream, Get_completion_context()))
 {
 }
 
-vsm::Operation_waiter
+ugcs::vsm::Operation_waiter
 Micro_adsb_device::Read_version(
         Read_version_handler handler,
-        vsm::Request_completion_context::Ptr ctx)
+        ugcs::vsm::Request_completion_context::Ptr ctx)
 {
     if (read_version_handler) {
-        VSM_EXCEPTION(vsm::Invalid_op_exception, "Read version already in progress");
+        VSM_EXCEPTION(ugcs::vsm::Invalid_op_exception, "Read version already in progress");
     }
     read_version_handler = handler;
     read_version_attempts = 0;
     ASSERT(!read_version_request);
 
-    read_version_request = vsm::Request::Create();
+    read_version_request = ugcs::vsm::Request::Create();
     read_version_request->Set_processing_handler(
-            vsm::Make_callback(
+            ugcs::vsm::Make_callback(
                     &Micro_adsb_device::On_read_version,
                     Shared_from_this()));
 
@@ -49,21 +49,21 @@ Micro_adsb_device::Read_version(
     return read_version_request;
 }
 
-vsm::Operation_waiter
+ugcs::vsm::Operation_waiter
 Micro_adsb_device::Init_frames_receiving(
         Init_frames_receiving_handler handler,
-        vsm::Request_completion_context::Ptr ctx)
+        ugcs::vsm::Request_completion_context::Ptr ctx)
 {
     if (init_frames_receiving_handler) {
-        VSM_EXCEPTION(vsm::Invalid_op_exception, "Init frames receiving already in progress");
+        VSM_EXCEPTION(ugcs::vsm::Invalid_op_exception, "Init frames receiving already in progress");
     }
     init_frames_receiving_handler = handler;
     init_frames_receiving_attempts = 0;
     ASSERT(!init_frames_receiving_request);
 
-    init_frames_receiving_request = vsm::Request::Create();
+    init_frames_receiving_request = ugcs::vsm::Request::Create();
     init_frames_receiving_request->Set_processing_handler(
-            vsm::Make_callback(
+            ugcs::vsm::Make_callback(
                     &Micro_adsb_device::On_init_frames_receiving,
                     Shared_from_this()));
 
@@ -76,7 +76,7 @@ Micro_adsb_device::Init_frames_receiving(
 void
 Micro_adsb_device::On_enable()
 {
-    //filter->Set_line_handler(vsm::Text_stream_filter::Make_line_handler(&line_handler));
+    //filter->Set_line_handler(ugcs::vsm::Text_stream_filter::Make_line_handler(&line_handler));
     /* Example output: @00011AD59C088D3C675558BF01CB5A44478EC142;#0000001A;
      *                 @000123993F78200017B070DE22;#000000D8;
      *
@@ -84,7 +84,7 @@ Micro_adsb_device::On_enable()
      */
     filter->Add_entry(
             regex::regex("@(([:xdigit:]){12})(([:xdigit:][:xdigit:])+);#(([:xdigit:]){8,});"),
-            vsm::Text_stream_filter::Make_match_handler(
+            ugcs::vsm::Text_stream_filter::Make_match_handler(
                     &Micro_adsb_device::Read_frame_handler_cb,
                     Shared_from_this()));
 
@@ -120,7 +120,7 @@ void
 Micro_adsb_device::Write_cmd(const std::string& cmd)
 {
     write_ops.emplace(stream->Write(
-            vsm::Io_buffer::Create(cmd + "\r"),
+            ugcs::vsm::Io_buffer::Create(cmd + "\r"),
             Make_write_callback(
                     &Micro_adsb_device::On_write_completed,
                     Shared_from_this()),
@@ -128,7 +128,7 @@ Micro_adsb_device::Write_cmd(const std::string& cmd)
 }
 
 void
-Micro_adsb_device::On_write_completed(vsm::Io_result)
+Micro_adsb_device::On_write_completed(ugcs::vsm::Io_result)
 {
     ASSERT(!write_ops.empty());
     /* Not done, because it is expected to be currently processed. */
@@ -140,16 +140,16 @@ Micro_adsb_device::On_write_completed(vsm::Io_result)
 bool
 Micro_adsb_device::Read_version_handler_cb(
         regex::smatch * match,
-        vsm::Text_stream_filter::Lines_list*,
-        vsm::Io_result result)
+        ugcs::vsm::Text_stream_filter::Lines_list*,
+        ugcs::vsm::Io_result result)
 {
-    if (result == vsm::Io_result::OK) {
+    if (result == ugcs::vsm::Io_result::OK) {
         const char* match_str = (*match)[1].str().c_str();
         uint8_t version = static_cast<uint8_t>(std::strtoul(match_str, nullptr, 16));
-        Complete_read_version_request(version, vsm::Io_result::OK);
-    } else if (result == vsm::Io_result::TIMED_OUT) {
+        Complete_read_version_request(version, ugcs::vsm::Io_result::OK);
+    } else if (result == ugcs::vsm::Io_result::TIMED_OUT) {
         if (read_version_attempts >= CMD_ATTEMPTS) {
-            Complete_read_version_request(0, vsm::Io_result::TIMED_OUT);
+            Complete_read_version_request(0, ugcs::vsm::Io_result::TIMED_OUT);
         } else {
             Read_version_try();
         }
@@ -172,7 +172,7 @@ Micro_adsb_device::Read_version_try()
     /* Example output: #00-00-0E-04-00-00-00-00-00-00-00-00-00-00-00-00 */
     filter->Add_entry(
             regex::regex("#00-[:xdigit:][:xdigit:]-([:xdigit:][:xdigit:])-04([:xdigit:]|-)*"),
-            vsm::Text_stream_filter::Make_match_handler(
+            ugcs::vsm::Text_stream_filter::Make_match_handler(
                     &Micro_adsb_device::Read_version_handler_cb,
                     Shared_from_this()),
                     CMD_RESPONSE_TIMEOUT);
@@ -181,7 +181,7 @@ Micro_adsb_device::Read_version_try()
 
 void
 Micro_adsb_device::Complete_read_version_request(
-        uint8_t version, vsm::Io_result result)
+        uint8_t version, ugcs::vsm::Io_result result)
 {
     ASSERT(read_version_handler);
     ASSERT(read_version_request);
@@ -194,10 +194,10 @@ Micro_adsb_device::Complete_read_version_request(
 bool
 Micro_adsb_device::Init_frames_receiving_handler_cb(
         regex::smatch*,
-        vsm::Text_stream_filter::Lines_list*,
-        vsm::Io_result result)
+        ugcs::vsm::Text_stream_filter::Lines_list*,
+        ugcs::vsm::Io_result result)
 {
-    if (result == vsm::Io_result::TIMED_OUT) {
+    if (result == ugcs::vsm::Io_result::TIMED_OUT) {
         if (init_frames_receiving_attempts < CMD_ATTEMPTS) {
             Init_frames_receiving_try();
             return false;
@@ -214,7 +214,7 @@ Micro_adsb_device::On_init_frames_receiving()
 }
 
 void
-Micro_adsb_device::Complete_init_frames_receiving_request(vsm::Io_result result)
+Micro_adsb_device::Complete_init_frames_receiving_request(ugcs::vsm::Io_result result)
 {
     ASSERT(init_frames_receiving_handler);
     ASSERT(init_frames_receiving_request);
@@ -234,7 +234,7 @@ Micro_adsb_device::Init_frames_receiving_try()
     /* Example output: #43-EF-00-00-00-00-00-00-00-00-00-00-00-00-00-00- */
     filter->Add_entry(
             regex::regex("#43-[:xdigit:][:xdigit:]-00-([:xdigit:]|-)*"),
-            vsm::Text_stream_filter::Make_match_handler(
+            ugcs::vsm::Text_stream_filter::Make_match_handler(
                     &Micro_adsb_device::Init_frames_receiving_handler_cb,
                     Shared_from_this()),
                     CMD_RESPONSE_TIMEOUT);
@@ -244,10 +244,10 @@ Micro_adsb_device::Init_frames_receiving_try()
 bool
 Micro_adsb_device::Read_frame_handler_cb(
         regex::smatch* match,
-        vsm::Text_stream_filter::Lines_list*,
-        vsm::Io_result result)
+        ugcs::vsm::Text_stream_filter::Lines_list*,
+        ugcs::vsm::Io_result result)
 {
-    if (result != vsm::Io_result::OK) {
+    if (result != ugcs::vsm::Io_result::OK) {
         Close();
         return false;
     } else {
@@ -262,7 +262,7 @@ Micro_adsb_device::Read_frame_handler_cb(
                     std::strtoul(frame_str.substr(i, 2).c_str(), nullptr, 16));
             frame[i >> 1] = c;
         }
-        Push_frame(vsm::Io_buffer::Create(std::move(frame)));
+        Push_frame(ugcs::vsm::Io_buffer::Create(std::move(frame)));
         return true;
     }
 }

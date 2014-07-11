@@ -8,14 +8,14 @@
 #ifndef _ADSB_DEVICE_PROCESSOR_H_
 #define _ADSB_DEVICE_PROCESSOR_H_
 
-#include <vsm/request_worker.h>
-#include <vsm/singleton.h>
+#include <ugcs/vsm/request_worker.h>
+#include <ugcs/vsm/singleton.h>
 
 /** Helper processor for managing ADS-B devices, i.e. low level operations long
  * before ADS-B frames decoding.
  */
-class Adsb_device_processor:public vsm::Request_processor {
-    DEFINE_COMMON_CLASS(Adsb_device_processor, vsm::Request_processor)
+class Adsb_device_processor:public ugcs::vsm::Request_processor {
+    DEFINE_COMMON_CLASS(Adsb_device_processor, ugcs::vsm::Request_processor)
 
 public:
 
@@ -31,7 +31,7 @@ public:
     }
 
     /** Get common completion context. */
-    vsm::Request_completion_context::Ptr
+    ugcs::vsm::Request_completion_context::Ptr
     Get_completion_context();
 
 private:
@@ -45,13 +45,13 @@ private:
     On_disable() override;
 
     /** Dedicated worker. */
-    vsm::Request_worker::Ptr worker;
+    ugcs::vsm::Request_worker::Ptr worker;
 
     /** Common completion context for all ADS-B devices. */
-    vsm::Request_completion_context::Ptr completion_ctx;
+    ugcs::vsm::Request_completion_context::Ptr completion_ctx;
 
     /** ADS-B device processor singleton instance. */
-    static vsm::Singleton<Adsb_device_processor> singleton;
+    static ugcs::vsm::Singleton<Adsb_device_processor> singleton;
 
 };
 

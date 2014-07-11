@@ -8,9 +8,9 @@
 #ifndef _CPR_DECODER_H_
 #define _CPR_DECODER_H_
 
-#include <vsm/adsb_frame.h>
-#include <vsm/optional.h>
-#include <vsm/coordinates.h>
+#include <ugcs/vsm/adsb_frame.h>
+#include <ugcs/vsm/optional.h>
+#include <ugcs/vsm/coordinates.h>
 
 namespace internal {
 
@@ -42,7 +42,7 @@ struct Airborne_params {
      * accurate within some 100Km precision. Used only for surface position
      * decoding. If absent, surface decoding will always fail.
      */
-    vsm::Optional<vsm::Geodetic_tuple> receiver_position;
+    ugcs::vsm::Optional<ugcs::vsm::Geodetic_tuple> receiver_position;
 };
 
 // @{
@@ -63,7 +63,7 @@ struct Surface_params {
 
     static constexpr bool IS_SURFACE = true;
 
-    vsm::Optional<vsm::Geodetic_tuple> receiver_position;
+    ugcs::vsm::Optional<ugcs::vsm::Geodetic_tuple> receiver_position;
 };
 // @}
 
@@ -80,10 +80,10 @@ public:
      * otherwise empty optional instance.
      */
     virtual
-    vsm::Optional<vsm::Geodetic_tuple>
+    ugcs::vsm::Optional<ugcs::vsm::Geodetic_tuple>
     Global_decode(
-            const vsm::Adsb_frame::Position_message& frame1,
-            const vsm::Adsb_frame::Position_message& frame2) const = 0;
+            const ugcs::vsm::Adsb_frame::Position_message& frame1,
+            const ugcs::vsm::Adsb_frame::Position_message& frame2) const = 0;
 
     /**
      * Locally unambiguous CPR decoding.
@@ -92,21 +92,21 @@ public:
      * @return Decoded position.
      */
     virtual
-    vsm::Geodetic_tuple
+    ugcs::vsm::Geodetic_tuple
     Local_decode(
-            const vsm::Geodetic_tuple& ref,
-            const vsm::Adsb_frame::Position_message& frame) const = 0;
+            const ugcs::vsm::Geodetic_tuple& ref,
+            const ugcs::vsm::Adsb_frame::Position_message& frame) const = 0;
 
     /** Set the position of the receiver to be able to decode surface positions. */
     virtual void
-    Set_receiver_position(const vsm::Geodetic_tuple& pos) = 0;
+    Set_receiver_position(const ugcs::vsm::Geodetic_tuple& pos) = 0;
 
     /** Check the distance between given positions to be less that maximum
      * distance after local decoding. Reasonableness test.
      * @return true if distance is less than maximum, otherwise false.
      */
     virtual bool
-    Check_local_distance(const vsm::Geodetic_tuple& p1, const vsm::Geodetic_tuple& p2) const = 0;
+    Check_local_distance(const ugcs::vsm::Geodetic_tuple& p1, const ugcs::vsm::Geodetic_tuple& p2) const = 0;
 
     /** Check the distance between given position and the location of the
      * receiver, if known.
@@ -117,8 +117,8 @@ public:
      */
     virtual bool
     Check_receiver_distance(
-            const vsm::Geodetic_tuple& p,
-            vsm::Optional<double>& distance) const = 0;
+            const ugcs::vsm::Geodetic_tuple& p,
+            ugcs::vsm::Optional<double>& distance) const = 0;
 
     /** Checks whether given distance between globally and locally decoded
      * positions is within reasonable range.
@@ -224,16 +224,16 @@ public:
      * otherwise empty optional instance.
      */
     virtual
-    vsm::Optional<vsm::Geodetic_tuple>
+    ugcs::vsm::Optional<ugcs::vsm::Geodetic_tuple>
     Global_decode(
-            const vsm::Adsb_frame::Position_message& frame1,
-            const vsm::Adsb_frame::Position_message& frame2) const override
+            const ugcs::vsm::Adsb_frame::Position_message& frame1,
+            const ugcs::vsm::Adsb_frame::Position_message& frame2) const override
     {
         constexpr double Dlat0 = Params::DENOM / (4 * NZ - 0);
         constexpr double Dlat1 = Params::DENOM / (4 * NZ - 1);
         bool recent_parity;
-        const vsm::Adsb_frame::Position_message* even;
-        const vsm::Adsb_frame::Position_message* odd;
+        const ugcs::vsm::Adsb_frame::Position_message* even;
+        const ugcs::vsm::Adsb_frame::Position_message* odd;
 
         ASSERT(frame1.Get_CPR_format() != frame2.Get_CPR_format());
 
@@ -250,7 +250,7 @@ public:
         }
 
         if (diff > Params::GLOBAL_DECODE_INTERVAL) {
-            return vsm::Optional<vsm::Geodetic_tuple>();
+            return ugcs::vsm::Optional<ugcs::vsm::Geodetic_tuple>();
         }
 
         if (frame1.Get_CPR_format()) {
@@ -270,7 +270,7 @@ public:
         if (params.IS_SURFACE) {
             /* Surface position decode needs receiver position to be known. */
             if (!params.receiver_position) {
-                return vsm::Optional<vsm::Geodetic_tuple>();
+                return ugcs::vsm::Optional<ugcs::vsm::Geodetic_tuple>();
             } else {
                 double receiver_lat =
                         ((*params.receiver_position).latitude * 180.0) / M_PI;
@@ -285,13 +285,13 @@ public:
                 }
                 if (!found) {
                     /* Still bad? */
-                    return vsm::Optional<vsm::Geodetic_tuple>();
+                    return ugcs::vsm::Optional<ugcs::vsm::Geodetic_tuple>();
                 }
             }
         } else {
 			if (!Normalize_global_decode_lat(Rlat0) ||
 			    !Normalize_global_decode_lat(Rlat1)) {
-			    return vsm::Optional<vsm::Geodetic_tuple>();
+			    return ugcs::vsm::Optional<ugcs::vsm::Geodetic_tuple>();
             }
         }
         double NLRlat0 = NL(Rlat0);
@@ -301,7 +301,7 @@ public:
             /* Aircraft crossing zone boundary. Unable to do global decode, wait for
              * next positions.
              */
-            return vsm::Optional<vsm::Geodetic_tuple>();
+            return ugcs::vsm::Optional<ugcs::vsm::Geodetic_tuple>();
         }
 
         double n = recent_parity ? NLRlat1 - 1 : NLRlat0;
@@ -330,14 +330,14 @@ public:
             }
             if (!found) {
                 /* Still bad? */
-                return vsm::Optional<vsm::Geodetic_tuple>();
+                return ugcs::vsm::Optional<ugcs::vsm::Geodetic_tuple>();
             }
         } else {
             if (Rlon >= 180) {
                 Rlon -= 360;
             }
         }
-        return vsm::Optional<vsm::Geodetic_tuple>(vsm::Geodetic_tuple(
+        return ugcs::vsm::Optional<ugcs::vsm::Geodetic_tuple>(ugcs::vsm::Geodetic_tuple(
                 (recent_parity ? Rlat1 : Rlat0) * M_PI / 180.0,
                 Rlon * M_PI / 180.0, 0));
     }
@@ -349,10 +349,10 @@ public:
      * @return Decoded position.
      */
     virtual
-    vsm::Geodetic_tuple
+    ugcs::vsm::Geodetic_tuple
     Local_decode(
-            const vsm::Geodetic_tuple& ref,
-            const vsm::Adsb_frame::Position_message& frame) const override
+            const ugcs::vsm::Geodetic_tuple& ref,
+            const ugcs::vsm::Adsb_frame::Position_message& frame) const override
     {
         double ref_latitude = ref.latitude * 180 / M_PI;
         double ref_longitude = ref.longitude * 180 / M_PI;
@@ -380,34 +380,34 @@ public:
 
         double Rlon = Dlon * (m + frame.Get_CPR_longitude() / N2x17);
 
-        return vsm::Geodetic_tuple(Rlat * M_PI / 180.0, Rlon * M_PI / 180.0, 0);
+        return ugcs::vsm::Geodetic_tuple(Rlat * M_PI / 180.0, Rlon * M_PI / 180.0, 0);
     }
 
     virtual void
-    Set_receiver_position(const vsm::Geodetic_tuple& pos) override
+    Set_receiver_position(const ugcs::vsm::Geodetic_tuple& pos) override
     {
         params.receiver_position = pos;
     }
 
     virtual bool
     Check_local_distance(
-            const vsm::Geodetic_tuple& p1,
-            const vsm::Geodetic_tuple& p2) const override
+            const ugcs::vsm::Geodetic_tuple& p1,
+            const ugcs::vsm::Geodetic_tuple& p2) const override
     {
-        auto distance = vsm::Wgs84_position(p1).Distance(p2);
+        auto distance = ugcs::vsm::Wgs84_position(p1).Distance(p2);
         return distance < Params::MAX_LOCAL_DISTANCE;
     }
 
     virtual bool
     Check_receiver_distance(
-            const vsm::Geodetic_tuple& p,
-            vsm::Optional<double>& distance) const override
+            const ugcs::vsm::Geodetic_tuple& p,
+            ugcs::vsm::Optional<double>& distance) const override
     {
         distance.Disengage();
         if (!params.receiver_position) {
             return true;
         }
-        distance = vsm::Wgs84_position(p).Distance(*params.receiver_position);
+        distance = ugcs::vsm::Wgs84_position(p).Distance(*params.receiver_position);
         return *distance < MAX_ANTENNA_RANGE;
     }
 

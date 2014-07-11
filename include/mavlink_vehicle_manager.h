@@ -8,7 +8,7 @@
 #ifndef _MAVLINK_VEHICLE_MANAGER_H_
 #define _MAVLINK_VEHICLE_MANAGER_H_
 
-#include <vsm/vsm.h>
+#include <ugcs/vsm/vsm.h>
 #include <mavlink_vehicle.h>
 
 /** Abstract class implementing a Mavlink vehicle manager. The main detection
@@ -16,15 +16,15 @@
  * vehicle type, system and component id are taken to create a more specific
  * Mavlink vehicle instance by a subclass.
  */
-class Mavlink_vehicle_manager: public vsm::Request_processor {
-    DEFINE_COMMON_CLASS(Mavlink_vehicle_manager, vsm::Request_processor)
+class Mavlink_vehicle_manager: public ugcs::vsm::Request_processor {
+    DEFINE_COMMON_CLASS(Mavlink_vehicle_manager, ugcs::vsm::Request_processor)
 public:
 
     /** Constructor. */
     Mavlink_vehicle_manager(
             const std::string default_model_name,
             const std::string config_prefix,
-            const vsm::mavlink::Extension& extension,
+            const ugcs::vsm::mavlink::Extension& extension,
             size_t forced_max_read = 0);
 
 protected:
@@ -32,12 +32,15 @@ protected:
     /** Method for Mavlink vehicle creation, to be overridden by subclass. */
     virtual Mavlink_vehicle::Ptr
     Create_mavlink_vehicle(
-            vsm::Mavlink_demuxer::System_id system_id,
-            vsm::Mavlink_demuxer::Component_id component_id,
-            vsm::mavlink::MAV_TYPE type,
-            vsm::Io_stream::Ref stream,
+            ugcs::vsm::Mavlink_demuxer::System_id system_id,
+            ugcs::vsm::Mavlink_demuxer::Component_id component_id,
+            ugcs::vsm::mavlink::MAV_TYPE type,
+            ugcs::vsm::Io_stream::Ref stream,
+            ugcs::vsm::Socket_address::Ptr peer_addr,
+            ugcs::vsm::Optional<std::string> mission_dump_path,
             std::string serial_number,
-            std::string model_name) = 0;
+            std::string model_name,
+            bool id_overridden = false) = 0;
 
     /** Subclass should override this method to register On_new_connection
      * methods to the transport detector.
@@ -45,9 +48,21 @@ protected:
     virtual void
     Register_detectors() = 0;
 
+    /** Add a pattern to trigger extended detection timeout. */
+    void
+    Add_timeout_extension_pattern(const regex::regex&);
+
     /** Handler for a new transport connection. */
     void
-    On_new_connection(std::string portname, int baud, vsm::Io_stream::Ref);
+    Handle_new_connection(
+    		std::string portname,
+    		int baud,
+    		ugcs::vsm::Socket_address::Ptr,
+    		ugcs::vsm::Io_stream::Ref,
+    		ugcs::vsm::Optional<std::string> custom_model_name =
+    				ugcs::vsm::Optional<std::string>(),
+    		ugcs::vsm::Optional<std::string> custom_serial_number =
+    				ugcs::vsm::Optional<std::string>());
 
     /** Default model name to use in UCS system id calculation. */
     std::string default_model_name;
@@ -56,12 +71,23 @@ protected:
     std::string config_prefix;
 
     /** Mavlink extension used for Mavlink stream creation. */
-    const vsm::mavlink::Extension& extension;
+    const ugcs::vsm::mavlink::Extension& extension;
 
     /** Maximum forced Mavlink stream read size. */
     size_t forced_max_read;
 
+    /** Get vehicle manager worker. */
+    ugcs::vsm::Request_worker::Ptr
+    Get_worker();
+
+    /** Called when manager is disabled. To be overridden by subclass, if
+     * necessary. */
+    virtual void
+    On_manager_disable();
+
 private:
+    /** Maximum length of accumulated raw line. */
+    static constexpr size_t MAX_RAW_LINE = 1024;
 
     bool
     On_timer();
@@ -78,15 +104,18 @@ private:
 
     /** Detector should wait this much milliseconds to fail detection.
      * The interval is so big because APM takes ~4 seconds to boot when connected directly to USB*/
-    const std::chrono::milliseconds DETECTOR_TIMEOUT = std::chrono::milliseconds(5000);
+    const std::chrono::milliseconds DETECTOR_TIMEOUT = std::chrono::milliseconds(6000);
+
+    /** Timeout is extended to this value when raw data patterns are matched. */
+    const std::chrono::milliseconds EXTENDED_TIMEOUT = std::chrono::milliseconds(5000);
 
     /** Handler for the event of protocol transition to OPERATIONAL state. */
-    typedef vsm::Callback_proxy<void> Ready_handler;
+    typedef ugcs::vsm::Callback_proxy<void> Ready_handler;
 
     /** Context of the managed vehicle. */
     struct Vehicle_ctx {
         Mavlink_vehicle::Ptr vehicle;
-        vsm::Io_stream::Ref stream;
+        ugcs::vsm::Io_stream::Ref stream;
     };
 
     /** Managed vehicles. */
@@ -96,7 +125,7 @@ private:
      * system id maps to [model name, serial number]. */
     std::unordered_map<int, std::pair<std::string, std::string> > preconfigured;
 
-    vsm::Request_worker::Ptr worker;
+    ugcs::vsm::Request_worker::Ptr worker;
 
     /** Trivial detector state. */
     class Detector_ctx {
@@ -104,8 +133,7 @@ private:
 
         Detector_ctx(Detector_ctx&&) = default;
 
-        Detector_ctx(int timeout) :
-            timeout(timeout) {}
+        Detector_ctx(int timeout) : timeout(timeout) {}
 
         ~Detector_ctx()
         {
@@ -116,7 +144,10 @@ private:
         int timeout;
 
         /** Current stream read operation. */
-        vsm::Operation_waiter read_op;
+        ugcs::vsm::Operation_waiter read_op;
+
+        /** Current line of raw data. */
+        std::string curr_line;
     };
 
     /** Map of Mavlink streams in detecting state (not bound to vehicles) and
@@ -124,24 +155,41 @@ private:
      * Stream lives in this state for 1 second until Mavlink protocol detected
      * or detection failed.
      */
-    std::unordered_map<vsm::Mavlink_stream::Ptr, Detector_ctx> detectors;
+    std::unordered_map<Mavlink_vehicle::Mavlink_stream::Ptr, Detector_ctx> detectors;
 
     /** Watchdog timer for detection. */
-    vsm::Timer_processor::Timer::Ptr watchdog_timer;
+    ugcs::vsm::Timer_processor::Timer::Ptr watchdog_timer;
+
+    /** Mission dump path. */
+    ugcs::vsm::Optional<std::string> mission_dump_path;
+
+    /** Patterns which extended detection timeout. */
+    std::vector<regex::regex> extension_patterns;
 
     /** Create new or update existing vehicles based on received system id
      * and type of the vehicle. */
     void
     On_heartbeat(
-            vsm::mavlink::Message<vsm::mavlink::MESSAGE_ID::HEARTBEAT>::Ptr message,
-            vsm::Mavlink_stream::Ptr mav_stream);
+            ugcs::vsm::mavlink::Message<ugcs::vsm::mavlink::MESSAGE_ID::HEARTBEAT>::Ptr message,
+            Mavlink_vehicle::Mavlink_stream::Ptr mav_stream,
+            ugcs::vsm::Socket_address::Ptr peer_addr,
+            ugcs::vsm::Optional<std::string> custom_model_name,
+            ugcs::vsm::Optional<std::string> custom_serial_number);
+
+    /** Raw data handler from Mavlink stream. */
+    void
+    On_raw_data(ugcs::vsm::Io_buffer::Ptr, Mavlink_vehicle::Mavlink_stream::Ptr);
+
+    /** Handle full line from the raw data. */
+    void
+    Handle_raw_line(Detector_ctx&, const Mavlink_vehicle::Mavlink_stream::Ptr&);
 
     void
-    Schedule_next_read(vsm::Mavlink_stream::Ptr);
+    Schedule_next_read(Mavlink_vehicle::Mavlink_stream::Ptr);
 
     /** Stream read completion handler. */
     void
-    On_stream_read(vsm::Io_buffer::Ptr, vsm::Io_result, vsm::Mavlink_stream::Ptr);
+    On_stream_read(ugcs::vsm::Io_buffer::Ptr, ugcs::vsm::Io_result, Mavlink_vehicle::Mavlink_stream::Ptr);
 
     /** Enable the manager. */
     virtual void
@@ -153,7 +201,7 @@ private:
 
     /** Process disable event from the processor context. */
     void
-    Process_on_disable(vsm::Request::Ptr);
+    Process_on_disable(ugcs::vsm::Request::Ptr);
 };
 
 #endif /* _MAVLINK_VEHICLE_MANAGER_H_ */

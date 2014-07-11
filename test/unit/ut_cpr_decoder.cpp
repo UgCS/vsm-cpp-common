@@ -3,12 +3,12 @@
 // See LICENSE file for license details.
 
 #include <cpr_decoder.h>
-#include <vsm/vsm.h>
+#include <ugcs/vsm/vsm.h>
 #include <fstream>
 
 #include <UnitTest++.h>
 
-using namespace vsm;
+using namespace ugcs::vsm;
 
 constexpr double tolerance_meters = 5.1; /* Official CPR tolerance. */
 constexpr double earth_equator_to_pole_meters = 10000000; /* 10.000 Km */

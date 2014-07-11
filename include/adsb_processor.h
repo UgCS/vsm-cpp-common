@@ -11,17 +11,17 @@
 #include <adsb_device.h>
 #include <unordered_map>
 #include <unordered_set>
-#include <vsm/request_worker.h>
+#include <ugcs/vsm/request_worker.h>
 #include <cpr_decoder.h>
-#include <vsm/adsb_report.h>
+#include <ugcs/vsm/adsb_report.h>
 #include <queue>
 
 /** ADS-B processor for reading of ADS-B data and forming easy-to use
  * position reports. Currently, only airborne aircrafts are tracked. Ground
  * surface information is ignored.
  */
-class Adsb_processor: public vsm::Request_processor {
-    DEFINE_COMMON_CLASS(Adsb_processor, vsm::Request_container)
+class Adsb_processor: public ugcs::vsm::Request_processor {
+    DEFINE_COMMON_CLASS(Adsb_processor, ugcs::vsm::Request_container)
 public:
 
     /** Constructor. */
@@ -57,14 +57,14 @@ public:
         Reports_stream(Adsb_processor::Ptr);
 
         /** ADS-B report handler. */
-        typedef vsm::Callback_proxy<void, vsm::Adsb_report> Report_handler;
+        typedef ugcs::vsm::Callback_proxy<void, ugcs::vsm::Adsb_report> Report_handler;
 
         /** Builder for report callback. */
-        DEFINE_CALLBACK_BUILDER(Make_report_callback, (vsm::Adsb_report), (vsm::Adsb_report()))
+        DEFINE_CALLBACK_BUILDER(Make_report_callback, (ugcs::vsm::Adsb_report), (ugcs::vsm::Adsb_report()))
 
         /** Read next report. */
-        vsm::Operation_waiter
-        Read(Report_handler, vsm::Request_completion_context::Ptr);
+        ugcs::vsm::Operation_waiter
+        Read(Report_handler, ugcs::vsm::Request_completion_context::Ptr);
 
         /** Close the stream. Should be called when stream is not read anymore. */
         void
@@ -92,7 +92,7 @@ public:
             On_completed(Report_handler);
 
             /** ADS-B report to be delivered to the user. */
-            vsm::Adsb_report report;
+            ugcs::vsm::Adsb_report report;
         };
 
         /** Process read request. */
@@ -101,7 +101,7 @@ public:
 
         /** Push new report to the stream. */
         void
-        Push_report(const vsm::Adsb_report&);
+        Push_report(const ugcs::vsm::Adsb_report&);
 
         /** Try to push the read queue. It is pushed only if at least one
          * read request and report is present. */
@@ -109,13 +109,13 @@ public:
         Push_read_queue();
 
         /** Not yet read reports. Awaiting read requests. */
-        std::queue<vsm::Adsb_report> reports;
+        std::queue<ugcs::vsm::Adsb_report> reports;
 
         /** Pending read request. Awaiting reports. */
         std::queue<Read_request::Ptr> requests;
 
         /** Number of lost reports since last Get_lost_reports call. */
-        std::atomic_size_t lost_reports;
+        std::atomic_size_t lost_reports = { 0 };
 
         /** Associated processor. */
         Adsb_processor::Weak_ptr processor;
@@ -141,10 +141,10 @@ protected:
     public:
 
         /** Handler for vehicle instance destruction. */
-        typedef vsm::Callback_proxy<void> Destroy_handler;
+        typedef ugcs::vsm::Callback_proxy<void> Destroy_handler;
 
         /** Handler for ADS-B reports. */
-        typedef vsm::Callback_proxy<void, vsm::Adsb_report> Report_handler;
+        typedef ugcs::vsm::Callback_proxy<void, ugcs::vsm::Adsb_report> Report_handler;
 
         /** State of the aircraft in respect to ADS-B tracking information
          * availability in a given moment of time.
@@ -169,7 +169,7 @@ protected:
         /** Construct the aircraft. ICAO address is minimum required info.
          * It is present in all ADS-B messages.
          */
-        Aircraft(const vsm::Adsb_frame::ICAO_address&, Destroy_handler, Report_handler);
+        Aircraft(const ugcs::vsm::Adsb_frame::ICAO_address&, Destroy_handler, Report_handler);
 
         /** Disable the instance. */
         void
@@ -177,23 +177,23 @@ protected:
 
         /** Process airborne position message. */
         void
-        Process(const vsm::Adsb_frame::Airborne_position_message& message,
-                vsm::Request_completion_context::Ptr& completion_ctx);
+        Process(const ugcs::vsm::Adsb_frame::Airborne_position_message& message,
+                ugcs::vsm::Request_completion_context::Ptr& completion_ctx);
 
         /** Process surface position message. */
         void
-        Process(const vsm::Adsb_frame::Surface_position_message& message,
-                vsm::Request_completion_context::Ptr& completion_ctx);
+        Process(const ugcs::vsm::Adsb_frame::Surface_position_message& message,
+                ugcs::vsm::Request_completion_context::Ptr& completion_ctx);
 
         /** Process aircraft identification and category message. */
         void
-        Process(const vsm::Adsb_frame::Aircraft_id_and_cat_message& message,
-                vsm::Request_completion_context::Ptr& completion_ctx);
+        Process(const ugcs::vsm::Adsb_frame::Aircraft_id_and_cat_message& message,
+                ugcs::vsm::Request_completion_context::Ptr& completion_ctx);
 
         /** Process airborne velocity message. */
         void
-        Process(const vsm::Adsb_frame::Airborne_velocity_message& message,
-                vsm::Request_completion_context::Ptr& completion_ctx);
+        Process(const ugcs::vsm::Adsb_frame::Airborne_velocity_message& message,
+                ugcs::vsm::Request_completion_context::Ptr& completion_ctx);
 
         /** Get current string representation of an aircraft. */
         std::string
@@ -202,7 +202,7 @@ protected:
     private:
 
         /** ICAO address of this aircraft. */
-        const vsm::Adsb_frame::ICAO_address address;
+        const ugcs::vsm::Adsb_frame::ICAO_address address;
 
         /** Destroy handler. */
         Destroy_handler destroy_handler;
@@ -211,19 +211,19 @@ protected:
         Report_handler report_handler;
 
         /** Even position message for global decode. */
-        vsm::Adsb_frame::Position_message even;
+        ugcs::vsm::Adsb_frame::Position_message even;
 
         /** Odd position message for global decode. */
-        vsm::Adsb_frame::Position_message odd;
+        ugcs::vsm::Adsb_frame::Position_message odd;
 
         /** The most recently known position of the aircraft. */
-        vsm::Optional<vsm::Geodetic_tuple> recent_position;
+        ugcs::vsm::Optional<ugcs::vsm::Geodetic_tuple> recent_position;
 
         /** Ambiguity check in acquisition state. */
         bool second_global_decode_done = false;
 
         /** Airborne/surface status of the aircraft. */
-        vsm::Optional<bool> airborne;
+        ugcs::vsm::Optional<bool> airborne;
 
         /** Airborne CPR decoder. */
         static Airborne_cpr_decoder airborne_decoder;
@@ -248,29 +248,29 @@ protected:
                 std::chrono::seconds(200);
 
         /** Aircraft category. */
-        vsm::Optional<vsm::Adsb_frame::Aircraft_id_and_cat_message::Emitter_category>
+        ugcs::vsm::Optional<ugcs::vsm::Adsb_frame::Aircraft_id_and_cat_message::Emitter_category>
         category;
 
         /** Aircraft identification. */
-        vsm::Optional<std::string> ident;
+        ugcs::vsm::Optional<std::string> ident;
 
         /** Heading, in radians clockwise from North. */
-        vsm::Optional<double> heading;
+        ugcs::vsm::Optional<double> heading;
 
         /** Horizontal speed, either ground or air, in m/s. */
-        vsm::Optional<double> horizontal_speed;
+        ugcs::vsm::Optional<double> horizontal_speed;
 
         /** Vertical speed, in m/s. */
-        vsm::Optional<double> vertical_speed;
+        ugcs::vsm::Optional<double> vertical_speed;
 
         /** Altitude, in meters. */
-        vsm::Optional<double> altitude;
+        ugcs::vsm::Optional<double> altitude;
 
         /** Current state of the aircraft. */
         State state = State::INITIALIZATION;
 
         /** Message receiving timer, depends on state. */
-        vsm::Timer_processor::Timer::Ptr timer;
+        ugcs::vsm::Timer_processor::Timer::Ptr timer;
 
         /** Change current state to a new state. */
         void
@@ -282,18 +282,18 @@ protected:
 
         /** Cancel existing (if any), and schedule new timer. */
         void
-        Reschedule_timer(vsm::Request_completion_context::Ptr& completion_ctx);
+        Reschedule_timer(ugcs::vsm::Request_completion_context::Ptr& completion_ctx);
 
         /** Timer handler. Behavior depends on current state. */
         bool
-        Timer_handler(vsm::Request_completion_context::Ptr completion_ctx);
+        Timer_handler(ugcs::vsm::Request_completion_context::Ptr completion_ctx);
 
         /** Process position using appropriate decoder.
          * @return true if message was successfully processed by this aircraft,
          * otherwise false. */
         bool
         Process_position(
-                const vsm::Adsb_frame::Position_message& pos,
+                const ugcs::vsm::Adsb_frame::Position_message& pos,
                 const Cpr_decoder& decoder);
 
         /** Generate new report based on current data. */
@@ -316,15 +316,15 @@ protected:
     std::mutex mutex;
 
     /** Separate worker for this processor. */
-    vsm::Request_worker::Ptr worker;
+    ugcs::vsm::Request_worker::Ptr worker;
 
     /** Completion context of this processor. */
-    vsm::Request_completion_context::Ptr completion_ctx;
+    ugcs::vsm::Request_completion_context::Ptr completion_ctx;
 
     /** The map of aircrafts indexed by ICAO address. */
-    typedef std::unordered_map<vsm::Adsb_frame::ICAO_address,
+    typedef std::unordered_map<ugcs::vsm::Adsb_frame::ICAO_address,
             Aircraft::Ptr,
-            vsm::Adsb_frame::ICAO_address::Hasher> Aircrafts_map;
+            ugcs::vsm::Adsb_frame::ICAO_address::Hasher> Aircrafts_map;
 
     /** Trivial context of an ADS-B device registered in processor. */
     class Adsb_device_ctx {
@@ -340,7 +340,7 @@ protected:
         }
 
         /** Current read frame operation of this device. */
-        vsm::Operation_waiter read_frame_op;
+        ugcs::vsm::Operation_waiter read_frame_op;
 
         /** Aircrafts created by this device. */
         Aircrafts_map aircrafts;
@@ -372,7 +372,7 @@ protected:
 
     /** Raw ADS-B frames handler. */
     void
-    Adsb_frame_received(vsm::Io_buffer::Ptr, vsm::Io_result, Adsb_device::Ptr);
+    Adsb_frame_received(ugcs::vsm::Io_buffer::Ptr, ugcs::vsm::Io_result, Adsb_device::Ptr);
 
     /** Lookup aircraft based on ICAO address.
      * @param device Device which received the frame.
@@ -385,36 +385,36 @@ protected:
     Aircraft::Ptr
     Lookup_aircarft(
             const Adsb_device::Ptr& device,
-            const vsm::Adsb_frame::ICAO_address& address,
+            const ugcs::vsm::Adsb_frame::ICAO_address& address,
             bool check_limit = false);
 
     /** Aircraft destroy handler. */
     void
-    Aircraft_destroyed(Adsb_device::Ptr, vsm::Adsb_frame::ICAO_address);
+    Aircraft_destroyed(Adsb_device::Ptr, ugcs::vsm::Adsb_frame::ICAO_address);
 
     /** Aircraft report handler. */
     void
-    Aircraft_report(vsm::Adsb_report);
+    Aircraft_report(ugcs::vsm::Adsb_report);
 
     /** Process downlink format 17 message. */
     void
-    Process_DF_17(vsm::Adsb_frame::Ptr&, Adsb_device::Ptr&);
+    Process_DF_17(ugcs::vsm::Adsb_frame::Ptr&, Adsb_device::Ptr&);
 
     /** Process downlink format 18 message. */
     void
-    Process_DF_18(vsm::Adsb_frame::Ptr&, Adsb_device::Ptr&);
+    Process_DF_18(ugcs::vsm::Adsb_frame::Ptr&, Adsb_device::Ptr&);
 
     /** Process downlink format 19 message. */
     void
-    Process_DF_19(vsm::Adsb_frame::Ptr&, Adsb_device::Ptr&);
+    Process_DF_19(ugcs::vsm::Adsb_frame::Ptr&, Adsb_device::Ptr&);
 
     /** Process ME field for a frame which is known to contain one. */
     void
-    Process_ME_field(vsm::Adsb_frame::Ptr&, Adsb_device::Ptr&);
+    Process_ME_field(ugcs::vsm::Adsb_frame::Ptr&, Adsb_device::Ptr&);
 
     template<class ME_message_type>
     void
-    Process_ME_message(vsm::Adsb_frame::Ptr& frame, Adsb_device::Ptr& device)
+    Process_ME_message(ugcs::vsm::Adsb_frame::Ptr& frame, Adsb_device::Ptr& device)
     {
         ME_message_type msg(frame);
         auto aircraft = Lookup_aircarft(device, msg.Get_ICAO_address(), true);
@@ -426,7 +426,7 @@ protected:
 
     /** Process airborne velocity message. */
     void
-    Process_airborne_velocity_message(vsm::Adsb_frame::Ptr&, Adsb_device::Ptr&);
+    Process_airborne_velocity_message(ugcs::vsm::Adsb_frame::Ptr&, Adsb_device::Ptr&);
 
     /** New stream opened in processor context. */
     void
@@ -440,7 +440,7 @@ protected:
     std::unordered_set<Reports_stream::Ptr> streams;
 
     /** ADS-B processor singleton instance. */
-    static vsm::Singleton<Adsb_processor> singleton;
+    static ugcs::vsm::Singleton<Adsb_processor> singleton;
 };
 
 #endif /* ADSB_PROCESSOR_H_ */
