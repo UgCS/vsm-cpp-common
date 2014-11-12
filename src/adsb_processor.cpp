@@ -116,7 +116,7 @@ Adsb_processor::Reports_stream::Push_report(const ugcs::vsm::Adsb_report& report
         Push_read_queue();
     } else {
         lost_reports.fetch_add(1);
-        LOG_WARN("ADS-B report is lost, current loss is %ld reports.", lost_reports.load());
+        LOG_WARN("ADS-B report is lost, current loss is %zu reports.", lost_reports.load());
     }
 }
 
@@ -277,7 +277,10 @@ Adsb_processor::Aircraft::Process(
         }
     }
     if (state == State::TRACKING) {
-        Generate_report();
+        /* Do not generate a report immediately, because it produces a report
+         * with the same coordinates as in previous report which is confusing.
+         * Solution is to have a separate message for the velocity, for example. */
+        //Generate_report();
     }
     if (state == State::INITIALIZATION) {
         Reschedule_timer(completion_context);
@@ -369,7 +372,7 @@ bool
 Adsb_processor::Aircraft::Timer_handler(
         ugcs::vsm::Request_completion_context::Ptr completion_ctx)
 {
-    LOG_INFO("Aircraft %s state [%s] timed out.",
+    LOG_DEBUG("Aircraft %s state [%s] timed out.",
             To_string().c_str(), State_to_str(state).c_str());
 
     switch (state) {
@@ -531,7 +534,7 @@ Adsb_processor::Process_on_disable(Request::Ptr request)
     }
     aircrafts.clear();
     if (streams.size()) {
-        LOG_ERR("Adsb processor still has %ld report streams opened while disabling.",
+        LOG_ERR("Adsb processor still has %zu report streams opened while disabling.",
                 streams.size());
         ASSERT(false);
     }
@@ -589,7 +592,7 @@ Adsb_processor::Adsb_frame_received(
                 break;
             }
         } else {
-            LOG_DEBUG("ADS-B frame incorrect size (%lu)", buffer->Get_length());
+            LOG_DEBUG("ADS-B frame incorrect size (%zu)", buffer->Get_length());
         }
     } else {
         /* Disable and erase all aircrafts tracked by this device. */
@@ -619,7 +622,7 @@ Adsb_processor::Lookup_aircarft(
     if (iter == map.end()) {
         if (check_limit && map.size() >= MAX_AIRCRAFTS) {
             LOG_WARNING("Too many ADS-B aircrafts, new aircraft [%s] ignored. "
-                        "Do you really have around %lu visible aircrafts? "
+                        "Do you really have around %zu visible aircrafts? "
                         "If not, please submit a bug report.",
                         address.To_hex_string().c_str(),
                         MAX_AIRCRAFTS);
@@ -659,7 +662,7 @@ Adsb_processor::Aircraft_destroyed(
     auto& map = ctx->second.aircrafts;
     auto iter = map.find(address);
     ASSERT(iter != map.end());
-    LOG_INFO("Aircraft %s destroyed, device [%s] still has %ld aircrafts.",
+    LOG_INFO("Aircraft %s destroyed, device [%s] still has %zu aircrafts.",
             iter->second->To_string().c_str(),
             device->Get_name().c_str(), map.size() - 1);
     iter->second->Disable();

@@ -145,6 +145,40 @@ Mavlink_vehicle::Write_to_vehicle_timed_out(
 }
 
 void
+Mavlink_vehicle::Update_boot_time(std::chrono::milliseconds boot_duration)
+{
+    // Only if there is nonzero boot time because
+    // some vehicles (e.g. vehicle-emulator) do not send boot time.
+    if (boot_duration > boot_duration.zero()) {
+        auto current_vehicle_boot_time = std::chrono::steady_clock::now() - boot_duration;
+
+        if (last_known_vehicle_boot_time_known) {
+            if (current_vehicle_boot_time - last_known_vehicle_boot_time > ALTITUDE_ORIGIN_RESET_TRESHOLD) {
+                VEHICLE_LOG_INF((*this), "Vehicle rebooted %" PRId64 " s ago, resetting altitude origin...",
+                        std::chrono::duration_cast<std::chrono::seconds>(boot_duration).count());
+                Reset_altitude_origin();
+            }
+        } else {
+            // First time this vsm sees the vehicle.
+            VEHICLE_LOG_INF((*this), "Vehicle booted %" PRId64 " s ago.",
+                    std::chrono::duration_cast<std::chrono::seconds>(boot_duration).count());
+            if (boot_duration > ALTITUDE_ORIGIN_RESET_TRESHOLD) {
+                // Do not reset altitude origin if vehicle has been working
+                // already for more than 15 seconds.
+                VEHICLE_LOG_INF((*this), "Not resetting altitude origin on connect");
+            } else {
+                VEHICLE_LOG_INF((*this), "Resetting altitude origin on connect");
+                Reset_altitude_origin();
+            }
+            last_known_vehicle_boot_time_known = true;
+        }
+
+        // save the boot time on each packet to handle vehicle clock drift against system clock.
+        last_known_vehicle_boot_time = current_vehicle_boot_time;
+    }
+}
+
+void
 Mavlink_vehicle::Activity::Disable()
 {
     On_disable();
@@ -731,8 +765,8 @@ Mavlink_vehicle::Telemetry::On_global_position_int(
             static_cast<double>(message->payload->relative_alt) / 1000.0);
 
     if (message->payload->hdg != 0xffff) {
-        report->Set<tm::Heading>(
-            static_cast<double>(message->payload->hdg) / 100.0);
+        double course = static_cast<double>(message->payload->hdg) / 100.0;
+        report->Set<tm::Course>(course / 180.0 * M_PI);
     }
 
     double vx = static_cast<double>(message->payload->vx) / 100.0;
@@ -751,9 +785,9 @@ Mavlink_vehicle::Telemetry::On_attitude(
     telemetry_alive = true;
 
     auto report = vehicle.Open_telemetry_report();
-    report->Set<tm::Pitch>(message->payload->pitch.Get());
-    report->Set<tm::Roll>(message->payload->roll.Get());
-    report->Set<tm::Yaw>(message->payload->yaw.Get());
+    report->Set<tm::Attitude::Pitch>(message->payload->pitch.Get());
+    report->Set<tm::Attitude::Roll>(message->payload->roll.Get());
+    report->Set<tm::Attitude::Yaw>(message->payload->yaw.Get());
 }
 
 void
@@ -765,12 +799,17 @@ Mavlink_vehicle::Telemetry::On_vfr_hud(
     telemetry_alive = true;
 }
 
+constexpr std::chrono::milliseconds
+    Mavlink_vehicle::ALTITUDE_ORIGIN_RESET_TRESHOLD;
 void
 Mavlink_vehicle::Telemetry::On_gps_raw(
         mavlink::Message<mavlink::MESSAGE_ID::GPS_RAW_INT>::Ptr message)
 {
     telemetry_messages_last++;
     telemetry_alive = true;
+
+    vehicle.Update_boot_time(std::chrono::milliseconds(message->payload->time_usec / 1000));
+
 
     auto report = vehicle.Open_telemetry_report();
     if (message->payload->satellites_visible != 255) {

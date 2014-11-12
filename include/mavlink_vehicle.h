@@ -68,8 +68,30 @@ protected:
     const static ugcs::vsm::Mavlink_demuxer::Component_id VSM_COMPONENT_ID;
 
     /** Write operations timeout. */
-    constexpr static std::chrono::seconds WRITE_TIMEOUT =
-            std::chrono::seconds(60);
+    constexpr static std::chrono::seconds
+    WRITE_TIMEOUT = std::chrono::seconds(60);
+
+    /** How much reported vehicle clock can differ to drop altitude origin */
+    static constexpr std::chrono::milliseconds
+    ALTITUDE_ORIGIN_RESET_TRESHOLD = std::chrono::seconds(30);
+
+    /** Saved vehicle boot time from previous telemetry data */
+    std::chrono::time_point<std::chrono::steady_clock>
+    last_known_vehicle_boot_time;
+
+    /** to differentiate first time we got boot time from vehicle */
+    bool last_known_vehicle_boot_time_known = false;
+
+    /** Uses the above variables to detect recent boot and
+     * reset altitude origin.
+     * NOTE: This function should only be called from GPS_RAW_INT message
+     * because it is the only message which is consistent for both ardupilot
+     * and ArDrone. Other common messages (ATTITUDE, GLOBAL_POSITION_INT)
+     * are incorrectly implemented in ArDrone, they report microseconds,
+     * not ms as required by mavlink specification.
+     * )*/
+    void
+    Update_boot_time(std::chrono::milliseconds);
 
     /** Enable handler. */
     virtual void
@@ -679,6 +701,7 @@ protected:
          * value is known.
          */
         int prev_rx_errors_3dr = -1;
+
     } telemetry;
 
     /** Data related to clear all missions processing. */

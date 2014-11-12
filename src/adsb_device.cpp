@@ -95,7 +95,7 @@ Adsb_device::Push_frame(ugcs::vsm::Io_buffer::Ptr frame)
         Push_read_queue();
     } else {
         lost_frames.fetch_add(1);
-        LOG_WARN("ADS-B frame is lost, current loss is %ld frames.",
+        LOG_WARN("ADS-B frame is lost, current loss is %zu frames.",
                 lost_frames.load());
     }
 }
