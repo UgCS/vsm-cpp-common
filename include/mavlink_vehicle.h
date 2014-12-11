@@ -36,14 +36,12 @@ public:
             const ugcs::vsm::Vehicle::Capabilities& capabilities,
             ugcs::vsm::Io_stream::Ref stream,
             ugcs::vsm::Optional<std::string> mission_dump_path,
-            size_t forced_max_read,
             Args &&... args) :
     ugcs::vsm::Vehicle(type, autopilot, capabilities,
             std::forward<Args>(args)...),
             real_system_id(system_id),
             real_component_id(component_id),
             mission_dump_path(mission_dump_path),
-            forced_max_read(forced_max_read),
             mav_stream(Mavlink_stream::Create(stream, ugcs::vsm::mavlink::apm::Extension::Get())),
             heartbeat(*this),
             statistics(*this),
@@ -160,10 +158,6 @@ protected:
 
     /** Path for mission dumping. */
     ugcs::vsm::Optional<std::string> mission_dump_path;
-
-    /** Forced maximum read size for associated stream. Zero if force is
-     * no in use. */
-    const size_t forced_max_read;
 
     /** Mavlink streams towards the vehicle. */
     Mavlink_stream::Ptr mav_stream;
@@ -824,6 +818,7 @@ protected:
      * classes to access activities from base class.
      */
     friend class Ardupilot_vehicle;
+    friend class Emulator_vehicle;
     friend class Ardrone_vehicle;
 };
 

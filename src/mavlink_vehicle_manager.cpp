@@ -9,13 +9,11 @@ using namespace ugcs::vsm;
 Mavlink_vehicle_manager::Mavlink_vehicle_manager(
         const std::string default_model_name,
         const std::string config_prefix,
-        const mavlink::Extension& extension,
-        size_t forced_max_read) :
+        const mavlink::Extension& extension) :
     Request_processor("Mavlink vehicle manager processor"),
     default_model_name(default_model_name),
     config_prefix(config_prefix),
-    extension(extension),
-    forced_max_read(forced_max_read)
+    extension(extension)
 {
 }
 
@@ -248,10 +246,10 @@ Mavlink_vehicle_manager::Schedule_next_read(Mavlink_vehicle::Mavlink_stream::Ptr
         /* Mavlink stream still belongs to manager, so continue reading. */
         size_t to_read = mav_stream->Get_decoder().Get_next_read_size();
         size_t max_read;
-        if (!forced_max_read) {
-            max_read = to_read;
+        if (stream->Get_type() == Io_stream::Type::UDP) {
+            max_read = ugcs::vsm::mavlink::MAX_MAVLINK_PACKET_SIZE;
         } else {
-            max_read = forced_max_read;
+            max_read = to_read;
         }
         auto iter = detectors.find(mav_stream);
         ASSERT(iter != detectors.end());

@@ -104,7 +104,12 @@ Mavlink_vehicle::Schedule_next_read()
 {
     read_op.Abort();
     size_t to_read = mav_stream->Get_decoder().Get_next_read_size();
-    size_t max_read = forced_max_read ? forced_max_read : to_read;
+    size_t max_read;
+    if (mav_stream->Get_stream()->Get_type() == Io_stream::Type::UDP) {
+        max_read = ugcs::vsm::mavlink::MAX_MAVLINK_PACKET_SIZE;
+    } else {
+        max_read = to_read;
+    }
     read_op = mav_stream->Get_stream()->Read(max_read, to_read,
             Make_read_callback(&Mavlink_vehicle::On_read_handler,
                                Shared_from_this()),

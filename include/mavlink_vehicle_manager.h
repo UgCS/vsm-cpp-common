@@ -24,8 +24,7 @@ public:
     Mavlink_vehicle_manager(
             const std::string default_model_name,
             const std::string config_prefix,
-            const ugcs::vsm::mavlink::Extension& extension,
-            size_t forced_max_read = 0);
+            const ugcs::vsm::mavlink::Extension& extension);
 
 protected:
 
@@ -72,9 +71,6 @@ protected:
 
     /** Mavlink extension used for Mavlink stream creation. */
     const ugcs::vsm::mavlink::Extension& extension;
-
-    /** Maximum forced Mavlink stream read size. */
-    size_t forced_max_read;
 
     /** Get vehicle manager worker. */
     ugcs::vsm::Request_worker::Ptr
