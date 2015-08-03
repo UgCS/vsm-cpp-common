@@ -55,8 +55,6 @@ public:
         ASSERT(real_system_id != ugcs::vsm::Mavlink_demuxer::SYSTEM_ID_ANY);
     }
 
-protected:
-
     /** System ID of a VSM itself. Thats is the value seen by vehicle. Value
      * to be defined by a subclass. */
     const static ugcs::vsm::Mavlink_demuxer::System_id VSM_SYSTEM_ID;
@@ -68,6 +66,11 @@ protected:
     /** Write operations timeout. */
     constexpr static std::chrono::seconds
     WRITE_TIMEOUT = std::chrono::seconds(60);
+
+    bool
+    Is_mission_upload_active();
+
+protected:
 
     /** How much reported vehicle clock can differ to drop altitude origin */
     static constexpr std::chrono::milliseconds
@@ -696,6 +699,12 @@ protected:
          */
         int prev_rx_errors_3dr = -1;
 
+        /** Last timestamp in GLOBAL_POSITION_INT message. used to calculate vspeed */
+        double prev_time_since_boot = 0;
+
+        /** Last altitude in GLOBAL_POSITION_INT message. used to calculate vspeed */
+        double prev_altitude = 0;
+
     } telemetry;
 
     /** Data related to clear all missions processing. */
@@ -755,6 +764,10 @@ protected:
             /** Number of attempts for the whole task. */
             ATTEMPTS_TOTAL = 30,
         };
+
+        /** return true if mission upload is active. */
+        bool
+        Is_active();
 
         /** Start mission items uploading stored in mission_items variable. */
         void

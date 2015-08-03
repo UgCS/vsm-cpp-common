@@ -121,37 +121,81 @@ Mavlink_vehicle_manager::Add_timeout_extension_pattern(const regex::regex& re)
 }
 
 void
-Mavlink_vehicle_manager::On_heartbeat(
-        mavlink::Message<mavlink::MESSAGE_ID::HEARTBEAT>::Ptr message,
+Mavlink_vehicle_manager::Write_to_vehicle_timed_out(
+        const Operation_waiter::Ptr& waiter,
+        Mavlink_vehicle::Mavlink_stream::Weak_ptr mav_stream)
+{
+    auto locked = mav_stream.lock();
+    Io_stream::Ref stream = locked ? locked->Get_stream() : nullptr;
+    std::string server_info =
+            stream ? stream->Get_name() : "already disconnected";
+    LOG_DBG("Write timeout on [%s] detected.", server_info.c_str());
+    waiter->Abort();
+}
+
+void
+Mavlink_vehicle_manager::On_param_value(
+        mavlink::Message<mavlink::MESSAGE_ID::PARAM_VALUE>::Ptr message,
+        Mavlink_vehicle::Mavlink_stream::Ptr mav_stream)
+{
+    if (message->payload->param_id.Get_string() == "FRAME") {
+        auto det_iter = detectors.find(mav_stream);
+        if (det_iter != detectors.end() && message->payload->param_value == 2.0) {
+            det_iter->second.frame_type =
+                    static_cast<mavlink::MAV_TYPE>(mavlink::ugcs::MAV_TYPE::MAV_TYPE_IRIS);
+        }
+        auto system_id = message->Get_sender_system_id();
+        auto component_id = message->Get_sender_component_id();
+        Create_vehicle_wrapper(
+                mav_stream,
+                system_id,
+                component_id
+                );
+    }
+}
+
+void
+Mavlink_vehicle_manager::Create_vehicle_wrapper(
         Mavlink_vehicle::Mavlink_stream::Ptr mav_stream,
-        ugcs::vsm::Socket_address::Ptr peer_addr,
-        ugcs::vsm::Optional<std::string> custom_model_name,
-        ugcs::vsm::Optional<std::string> custom_serial_number)
+        mavlink::System_id_common system_id,
+        uint8_t component_id
+        )
 {
     std::string serial_number;
     std::string model_name;
-    auto system_id = message->Get_sender_system_id();
-    auto component_id = message->Get_sender_component_id();
-
+    auto frame_type = mavlink::MAV_TYPE::MAV_TYPE_QUADROTOR;
     bool is_preconfigured = false;
     auto it = vehicles.find(system_id);
+    ugcs::vsm::Socket_address::Ptr peer_addr = nullptr;
+
     if (it == vehicles.end()) {
-    	auto preconf = preconfigured.find(system_id);
-    	if (preconf != preconfigured.end()) {
-    	    model_name = preconf->second.first;
-    	    serial_number = preconf->second.second;
-    	    is_preconfigured = true;
-    	} else {
-    	    serial_number = std::to_string(system_id);
-    	    model_name = default_model_name;
-    	}
+        auto preconf = preconfigured.find(system_id);
+        if (preconf != preconfigured.end()) {
+            model_name = preconf->second.first;
+            serial_number = preconf->second.second;
+            is_preconfigured = true;
+        } else {
+            serial_number = std::to_string(system_id);
+            model_name = default_model_name;
+        }
         it = vehicles.emplace(system_id, Vehicle_ctx()).first;
+    }
+
+    auto det_iter = detectors.find(mav_stream);
+    ugcs::vsm::Optional<std::string> custom_model_name;
+    ugcs::vsm::Optional<std::string> custom_serial_number;
+
+    if (det_iter != detectors.end()) {
+        custom_model_name = det_iter->second.custom_model;
+        custom_serial_number = det_iter->second.custom_serial;
+        frame_type = det_iter->second.frame_type;
+        peer_addr = det_iter->second.peer_addr;
     }
 
     auto &ctx = it->second;
     if (!is_preconfigured) {
-    	model_name = custom_model_name ? *custom_model_name : model_name;
-    	serial_number = custom_serial_number ? *custom_serial_number : serial_number;
+        model_name = custom_model_name ? *custom_model_name : model_name;
+        serial_number = custom_serial_number ? *custom_serial_number : serial_number;
     }
     /* Note the vehicle reference! */
     auto& vehicle = ctx.vehicle;
@@ -176,7 +220,7 @@ Mavlink_vehicle_manager::On_heartbeat(
     vehicle = Create_mavlink_vehicle(
             system_id,
             component_id,
-            static_cast<mavlink::MAV_TYPE>(message->payload->type.Get()),
+            frame_type,
             mav_stream->Get_stream(),
             peer_addr,
             mission_dump_path,
@@ -193,8 +237,49 @@ Mavlink_vehicle_manager::On_heartbeat(
      * control over it. */
     mav_stream->Disable();
 
-    /* Mavlink detected, so remote this stream from detectors. */
+    /* Mavlink detected, so remove this stream from detectors. */
     detectors.erase(mav_stream);
+}
+
+void
+Mavlink_vehicle_manager::On_heartbeat(
+        mavlink::Message<mavlink::MESSAGE_ID::HEARTBEAT>::Ptr message,
+        Mavlink_vehicle::Mavlink_stream::Ptr mav_stream)
+{
+    std::string serial_number;
+    std::string model_name;
+    auto system_id = message->Get_sender_system_id();
+    auto component_id = message->Get_sender_component_id();
+
+    auto det_iter = detectors.find(mav_stream);
+    if (det_iter != detectors.end()) {
+        det_iter->second.frame_type = static_cast<mavlink::MAV_TYPE>(message->payload->type.Get());
+        if (det_iter->second.frame_detection_retries) {
+            // Try frame detection only once.
+            det_iter->second.frame_detection_retries--;
+
+            mavlink::Pld_param_request_read payload;
+            payload->target_component = component_id;
+            payload->target_system = system_id;
+            payload->param_id = "FRAME";
+            payload->param_index = -1;
+
+            mav_stream->Send_message(
+                    payload,
+                    Mavlink_vehicle::VSM_SYSTEM_ID,
+                    Mavlink_vehicle::VSM_COMPONENT_ID,
+                    Mavlink_vehicle::WRITE_TIMEOUT,
+                    Make_timeout_callback(
+                            &Mavlink_vehicle_manager::Write_to_vehicle_timed_out, this, mav_stream),
+                            Get_worker());
+        } else {
+            Create_vehicle_wrapper(
+                    mav_stream,
+                    system_id,
+                    component_id
+                    );
+        }
+    }
 }
 
 void
@@ -227,7 +312,7 @@ Mavlink_vehicle_manager::Handle_raw_line(
 {
     for(auto& re: extension_patterns) {
         regex::smatch smatch;
-        if (regex::regex_match(ctx.curr_line, smatch, re)) {
+        if (regex::regex_search(ctx.curr_line, smatch, re)) {
             LOG_DEBUG("Detection timeout extended due to pattern match: %s",
                     ctx.curr_line.c_str());
             ctx.timeout += EXTENDED_TIMEOUT / TIMER_INTERVAL;
@@ -349,6 +434,7 @@ Mavlink_vehicle_manager::Handle_new_connection(
         int baud,
         ugcs::vsm::Socket_address::Ptr peer_addr,
         ugcs::vsm::Io_stream::Ref stream,
+        bool detect_frame,
         ugcs::vsm::Optional<std::string> custom_model_name,
         ugcs::vsm::Optional<std::string> custom_serial_number)
 {
@@ -361,12 +447,25 @@ Mavlink_vehicle_manager::Handle_new_connection(
             Mavlink_demuxer::Make_handler<mavlink::MESSAGE_ID::HEARTBEAT, mavlink::Extension>(
                     &Mavlink_vehicle_manager::On_heartbeat,
                     Shared_from_this(),
-                    mav_stream,
+                    mav_stream));
+
+    mav_stream->Get_demuxer().
+            Register_handler<mavlink::MESSAGE_ID::PARAM_VALUE, mavlink::Extension>(
+            Mavlink_demuxer::Make_handler<mavlink::MESSAGE_ID::PARAM_VALUE, mavlink::Extension>(
+                    &Mavlink_vehicle_manager::On_param_value,
+                    Shared_from_this(),
+                    mav_stream));
+
+    detectors.emplace(
+            std::piecewise_construct,
+            std::forward_as_tuple(mav_stream),
+            std::forward_as_tuple(
+                    DETECTOR_TIMEOUT / TIMER_INTERVAL,
+                    detect_frame,
                     peer_addr,
                     custom_model_name,
-                    custom_serial_number));
-
-    detectors.emplace(mav_stream, DETECTOR_TIMEOUT / TIMER_INTERVAL);
+                    custom_serial_number
+                    ));
 
     mav_stream->Get_decoder().Register_raw_data_handler(
             Mavlink_vehicle::Mavlink_stream::Decoder::Make_raw_data_handler(

@@ -11,6 +11,7 @@
 #include <adsb_device.h>
 #include <ugcs/vsm/io_stream.h>
 #include <ugcs/vsm/text_stream_filter.h>
+#include <ugcs/vsm/timer_processor.h>
 
 /** Micro-ADSB device implementation. */
 class Micro_adsb_device: public Adsb_device {
@@ -27,9 +28,6 @@ public:
     /** Default prototype for read version operation completion handler. */
     typedef ugcs::vsm::Callback_proxy<void, uint8_t, ugcs::vsm::Io_result> Read_version_handler;
 
-    /** Default prototype for init frames receiving completion handler. */
-    typedef ugcs::vsm::Callback_proxy<void, ugcs::vsm::Io_result> Init_frames_receiving_handler;
-
     /** Builder for read version handler. */
     DEFINE_CALLBACK_BUILDER(Make_read_version_handler, (uint8_t, ugcs::vsm::Io_result),
             (0, ugcs::vsm::Io_result::OTHER_FAILURE));
@@ -38,6 +36,24 @@ public:
     DEFINE_CALLBACK_BUILDER(Make_init_frames_receiving_handler,
             (ugcs::vsm::Io_result), (ugcs::vsm::Io_result::OTHER_FAILURE));
 
+    /**
+     * Returns config prefix of a device
+     * Must be implemented in every specific device
+     */
+    static std::string
+    Get_config_prefix()	{ return ".micro_adsb"; };
+
+    /**
+     * Creates a new device and calls Adsb_manager to continue On_new_connection operation
+     * Must be implemented in every specific device
+     */
+    static void
+    On_new_connection(
+    		std::string,
+    		int,
+    		ugcs::vsm::Socket_address::Ptr,
+    		ugcs::vsm::Io_stream::Ref stream);
+
     /** Read firmware version of the device. */
     ugcs::vsm::Operation_waiter
     Read_version(Read_version_handler, ugcs::vsm::Request_completion_context::Ptr);
@@ -45,6 +61,18 @@ public:
     /** Initialize frames receiving. */
     ugcs::vsm::Operation_waiter
     Init_frames_receiving(Init_frames_receiving_handler, ugcs::vsm::Request_completion_context::Ptr);
+
+    /** Return the current status of device heartbeat.
+     * True means heartbeat is ok, false means it has timed out.
+     * Timings are device-specific.
+     */
+    bool
+    Get_is_heartbeat_ok() override;
+
+    /** Return true if heartbeat timeout is past shutdown threshold
+     */
+    bool
+    Get_is_heartbeat_shutdown() override;
 
 private:
 
@@ -91,16 +119,19 @@ private:
     /** Number of processed init frames receiving attempts. */
     size_t init_frames_receiving_attempts;
 
+    /** Heartbeat request. */
+    ugcs::vsm::Timer_processor::Timer::Ptr heartbeat_timer;
+
     /** Scheduled write operations. */
     std::queue<ugcs::vsm::Operation_waiter> write_ops;
 
     /** Enable the device. */
     virtual void
-    On_enable() override;
+    On_enable();
 
     /** Disable the device. */
     virtual void
-    On_disable() override;
+    On_disable();
 
     /** Write a command to the device. CR symbol is added automatically. */
     void
@@ -146,6 +177,21 @@ private:
     /** Correctly formatted frame handler. */
     bool
     Read_frame_handler_cb(regex::smatch*, ugcs::vsm::Text_stream_filter::Lines_list*, ugcs::vsm::Io_result);
+
+    /** Try to init heartbeat. */
+    void
+    Init_heartbeat_try();
+
+    /** Requests heartbeat per timer */
+    bool
+    On_heartbeat_request();
+
+    /** Handles heartbeat responses (in case of MicroADSB - handles version reports) */
+    bool
+    Heartbeat_response_handler(
+            regex::smatch* regex_hearbeat,
+            ugcs::vsm::Text_stream_filter::Lines_list* textflt,
+            ugcs::vsm::Io_result result);
 };
 
 #endif /* _MICRO_ADSB_DEVICE_H_ */

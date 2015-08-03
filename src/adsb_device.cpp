@@ -3,10 +3,17 @@
 // See LICENSE file for license details.
 
 #include <adsb_device.h>
+#include <ugcs/vsm/peripheral_device.h>
+#include <adsb_manager.h>
+#include <chrono>
+#include <adsb_processor.h>
+
+
 
 using namespace ugcs::vsm;
 
-Adsb_device::Adsb_device(const std::string& name) :
+Adsb_device::Adsb_device(const std::string& name) : ugcs::vsm::Request_processor("Adsb device-specific processor"),
+		ugcs::vsm::Peripheral_device(Peripheral_message::PERIPHERAL_TYPE::PERIPHERAL_DEVICE_ADSB),
         name(name)
 {
     processor = Adsb_device_processor::Get_instance();
@@ -15,6 +22,14 @@ Adsb_device::Adsb_device(const std::string& name) :
 void
 Adsb_device::Enable()
 {
+	// Workaround, to set last heartbeat time so that device starts at "heartbeat down" state
+	last_heartbeat_received = std::chrono::system_clock::now() - std::chrono::seconds(1);
+
+    adsb_worker = ugcs::vsm::Request_worker::Create(
+            "Adsb device worker",
+            std::initializer_list<ugcs::vsm::Request_container::Ptr>{Shared_from_this()});
+    adsb_worker->Enable();
+
     auto req = ugcs::vsm::Request::Create();
     req->Set_processing_handler(
             Make_callback(
@@ -30,6 +45,16 @@ Adsb_device::Enable()
 void
 Adsb_device::Disable()
 {
+    /*adsb_device_arbiter.lock();
+	if (shutting_down == true) {
+		return;
+	    adsb_device_arbiter.unlock();
+	}
+	shutting_down = true;
+
+    adsb_device_arbiter.unlock();
+    	*/
+
     auto req = ugcs::vsm::Request::Create();
     req->Set_processing_handler(
             Make_callback(
@@ -37,8 +62,13 @@ Adsb_device::Disable()
                     Shared_from_this(),
                     req));
 
-    Get_processor()->Submit_request(req);
+    adsb_worker->Submit_request(req);
     req->Wait_done(false);
+    LOG_DEBUG("ADS-B device worker shut down.");
+    Set_disabled();
+    adsb_worker->Disable();
+    adsb_worker = nullptr;
+    Remove_id();
 }
 
 ugcs::vsm::Operation_waiter
@@ -182,10 +212,16 @@ Adsb_device::Process_on_enable(ugcs::vsm::Request::Ptr request)
 void
 Adsb_device::Process_on_disable(ugcs::vsm::Request::Ptr request)
 {
+	LOG_DEBUG("ADSB Device disable in progress.");
     while(!read_requests.empty()) {
         read_requests.front()->Abort();
         read_requests.pop();
     }
     On_disable();
     request->Complete();
+}
+
+void
+Adsb_device::Update_heartbeat() {
+	last_heartbeat_received = std::chrono::system_clock::now();
 }

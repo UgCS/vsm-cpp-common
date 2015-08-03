@@ -58,6 +58,7 @@ protected:
     		int baud,
     		ugcs::vsm::Socket_address::Ptr,
     		ugcs::vsm::Io_stream::Ref,
+    		bool detect_frame = false,
     		ugcs::vsm::Optional<std::string> custom_model_name =
     				ugcs::vsm::Optional<std::string>(),
     		ugcs::vsm::Optional<std::string> custom_serial_number =
@@ -92,6 +93,13 @@ private:
     void
     Load_vehicle_config();
 
+    void
+    Create_vehicle_wrapper(
+            Mavlink_vehicle::Mavlink_stream::Ptr mav_stream,
+            ugcs::vsm::mavlink::System_id_common system_id,
+            uint8_t component_id
+            );
+
     /** Prototcol detection polling interval. */
     const std::chrono::milliseconds TIMER_INTERVAL = std::chrono::milliseconds(100);
 
@@ -107,6 +115,10 @@ private:
 
     /** Handler for the event of protocol transition to OPERATIONAL state. */
     typedef ugcs::vsm::Callback_proxy<void> Ready_handler;
+
+    /** Detector tries to detect frame 3 times.
+     * If that fails it defaults to whatever is in the HEARTBEAT message.*/
+    static const unsigned int FRAME_DETECTION_RETRIES = 3;
 
     /** Context of the managed vehicle. */
     struct Vehicle_ctx {
@@ -129,7 +141,18 @@ private:
 
         Detector_ctx(Detector_ctx&&) = default;
 
-        Detector_ctx(int timeout) : timeout(timeout) {}
+        Detector_ctx(
+                int timeout,
+                bool detect_frame,
+                ugcs::vsm::Socket_address::Ptr peer_addr,
+                ugcs::vsm::Optional<std::string> custom_model,
+                ugcs::vsm::Optional<std::string> custom_serial):
+            timeout(timeout),
+            frame_detection_retries(detect_frame?FRAME_DETECTION_RETRIES:0),
+            custom_model(custom_model),
+            custom_serial(custom_serial),
+            peer_addr(peer_addr)
+            {}
 
         ~Detector_ctx()
         {
@@ -138,6 +161,13 @@ private:
 
         /** Timeout counter. */
         int timeout;
+
+        unsigned int frame_detection_retries;
+        ugcs::vsm::mavlink::MAV_TYPE frame_type = ugcs::vsm::mavlink::MAV_TYPE_GENERIC;
+
+        ugcs::vsm::Optional<std::string> custom_model;
+        ugcs::vsm::Optional<std::string> custom_serial;
+        ugcs::vsm::Socket_address::Ptr peer_addr;
 
         /** Current stream read operation. */
         ugcs::vsm::Operation_waiter read_op;
@@ -162,15 +192,22 @@ private:
     /** Patterns which extended detection timeout. */
     std::vector<regex::regex> extension_patterns;
 
+    void
+    Write_to_vehicle_timed_out(
+            const ugcs::vsm::Operation_waiter::Ptr& waiter,
+            Mavlink_vehicle::Mavlink_stream::Weak_ptr mav_stream);
+
+    void
+    On_param_value(
+            ugcs::vsm::mavlink::Message<ugcs::vsm::mavlink::MESSAGE_ID::PARAM_VALUE>::Ptr message,
+            Mavlink_vehicle::Mavlink_stream::Ptr mav_stream);
+
     /** Create new or update existing vehicles based on received system id
      * and type of the vehicle. */
     void
     On_heartbeat(
             ugcs::vsm::mavlink::Message<ugcs::vsm::mavlink::MESSAGE_ID::HEARTBEAT>::Ptr message,
-            Mavlink_vehicle::Mavlink_stream::Ptr mav_stream,
-            ugcs::vsm::Socket_address::Ptr peer_addr,
-            ugcs::vsm::Optional<std::string> custom_model_name,
-            ugcs::vsm::Optional<std::string> custom_serial_number);
+            Mavlink_vehicle::Mavlink_stream::Ptr mav_stream);
 
     /** Raw data handler from Mavlink stream. */
     void

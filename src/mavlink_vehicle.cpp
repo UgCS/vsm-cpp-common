@@ -149,6 +149,12 @@ Mavlink_vehicle::Write_to_vehicle_timed_out(
     waiter->Abort();
 }
 
+bool
+Mavlink_vehicle::Is_mission_upload_active()
+{
+    return (mission_upload.Is_active());
+}
+
 void
 Mavlink_vehicle::Update_boot_time(std::chrono::milliseconds boot_duration)
 {
@@ -654,19 +660,24 @@ Mavlink_vehicle::Telemetry::On_disable()
 bool
 Mavlink_vehicle::Telemetry::On_telemetry_check()
 {
-    if (!telemetry_alive) {
-        VEHICLE_LOG_INF(vehicle, "Requesting telemetry...");
-        for (mavlink::MAV_DATA_STREAM id : {
-            mavlink::MAV_DATA_STREAM::MAV_DATA_STREAM_ALL}) {
-            mavlink::Pld_request_data_stream msg;
-            Fill_target_ids(msg);
-            msg->req_stream_id = id;
-            msg->req_message_rate = config.TELEMETRY_RATE_HZ;
-            msg->start_stop = 1; /* start */
-            Send_message(msg);
+    if (telemetry_alive) {
+        telemetry_alive = false;
+    } else {
+        // No telemetry data received lately.
+        // Request telemetry only if there is no active mission upload.
+        if (!vehicle.Is_mission_upload_active()) {
+            VEHICLE_LOG_INF(vehicle, "Requesting telemetry...");
+            for (mavlink::MAV_DATA_STREAM id : {
+                mavlink::MAV_DATA_STREAM::MAV_DATA_STREAM_ALL}) {
+                mavlink::Pld_request_data_stream msg;
+                Fill_target_ids(msg);
+                msg->req_stream_id = id;
+                msg->req_message_rate = config.TELEMETRY_RATE_HZ;
+                msg->start_stop = 1; /* start */
+                Send_message(msg);
+            }
         }
     }
-    telemetry_alive = false;
     return true;
 }
 
@@ -697,8 +708,6 @@ Mavlink_vehicle::Telemetry::On_estimate_link_quality()
         /* Compensate damping factor. */
         rate_quality = 1;
     }
-    telemetry_messages_last = 0;
-
     double error_quality = 0;
 
     /* Calculate link quality based on error rate. */
@@ -710,21 +719,29 @@ Mavlink_vehicle::Telemetry::On_estimate_link_quality()
     rx_errors_accum = 0;
     prev_stats = new_stats;
 
-    if (ok_diff > 0 && err_diff >= 0) {
-        error_quality = ok_diff / (ok_diff + err_diff);
+    // Do not update link quality if mission upload is in progress.
+    // We could calculate quality based on upload messages during upload.
+    // But that requires taking into account the baud_rate and I do not want to
+    // implement that right now as it there no real value.
+    if (!vehicle.Is_mission_upload_active()) {
+        if (ok_diff > 0 && err_diff >= 0) {
+            error_quality = ok_diff / (ok_diff + err_diff);
+        }
+
+        /* Calculate the average between rate and error quality. Rate quality affects
+         * the average in inverse ratio of the rate quality itself. I.e. the better
+         * rate quality is, the less it affects the average. In turn, error quality
+         * affects the average proportionally to rate quality. So when rate is good,
+         * then quality depends more on error quality, when rate is bad, the quality
+         * is bad too.
+         */
+        double quality = rate_quality * (1 - rate_quality) + rate_quality * error_quality;
+
+        /* Calculate rolling average. */
+        link_quality = link_quality * (1 - QUALITY_RA_QUOT) + (QUALITY_RA_QUOT) * quality;
     }
 
-    /* Calculate the average between rate and error quality. Rate quality affects
-     * the average in inverse ratio of the rate quality itself. I.e. the better
-     * rate quality is, the less it affects the average. In turn, error quality
-     * affects the average proportionally to rate quality. So when rate is good,
-     * then quality depends more on error quality, when rate is bad, the quality
-     * is bad too.
-     */
-    double quality = rate_quality * (1 - rate_quality) + rate_quality * error_quality;
-
-    /* Calculate rolling average. */
-    link_quality = link_quality * (1 - QUALITY_RA_QUOT) + (QUALITY_RA_QUOT) * quality;
+    telemetry_messages_last = 0;
 
     return true;
 }
@@ -766,20 +783,38 @@ Mavlink_vehicle::Telemetry::On_global_position_int(
         static_cast<double>(message->payload->alt) / 1000.0);
     report->Set<tm::Position>(pos);
 
-    report->Set<tm::Rel_altitude>(
-            static_cast<double>(message->payload->relative_alt) / 1000.0);
+    auto current_altitude = static_cast<double>(message->payload->relative_alt) / 1000.0;
 
-    if (message->payload->hdg != 0xffff) {
-        double course = static_cast<double>(message->payload->hdg) / 100.0;
-        report->Set<tm::Course>(course / 180.0 * M_PI);
-    }
+    report->Set<tm::Rel_altitude>(current_altitude);
 
     double vx = static_cast<double>(message->payload->vx) / 100.0;
     double vy = static_cast<double>(message->payload->vy) / 100.0;
+
     report->Set<tm::Ground_speed>(sqrt(vx * vx + vy * vy));
 
-    double vz = static_cast<double>(message->payload->vz) / 100.0;
-    report->Set<tm::Climb_rate>(vz);
+    float course = std::atan2(vy, vx);
+    if (std::isnormal(course)) {
+        report->Set<tm::Course>(course);
+    } else {
+        report->Set<tm::Course>(0);
+    }
+
+    // Vertical speed calculations.
+    // Ardupilot reports crazy values in vz speed, ArDrone reports 0.
+    // So, calculate vspeed from altitude changes which look much better.
+
+    auto current_time_since_boot = static_cast<double>(message->payload->time_boot_ms) / 1000.0;
+
+    if (static_cast<mavlink::ugcs::MAV_AUTOPILOT>(vehicle.Get_autopilot()) == mavlink::ugcs::MAV_AUTOPILOT_AR_DRONE) {
+        // ArDrone reports time in microseconds, not milliseconds.
+        current_time_since_boot /= 1000.0;
+    }
+
+    if (current_time_since_boot > prev_time_since_boot) {
+        report->Set<tm::Climb_rate>((current_altitude - prev_altitude) / (current_time_since_boot - prev_time_since_boot));
+    }
+    prev_time_since_boot = current_time_since_boot;
+    prev_altitude = current_altitude;
 }
 
 void
@@ -797,11 +832,20 @@ Mavlink_vehicle::Telemetry::On_attitude(
 
 void
 Mavlink_vehicle::Telemetry::On_vfr_hud(
-        mavlink::Message<mavlink::MESSAGE_ID::VFR_HUD>::Ptr)
+        mavlink::Message<mavlink::MESSAGE_ID::VFR_HUD>::Ptr message)
 {
     /* Duplicated in other messages. */
     telemetry_messages_last++;
     telemetry_alive = true;
+
+    // Report airspeed only if value is non-zero and not equal to groundspeed in the same message.
+    // air==ground assumes that airspeed sensor is not present.
+    // At least it is what ardupilot sends.
+    if (    message->payload->airspeed.Get() != message->payload->groundspeed.Get()
+        &&  message->payload->airspeed.Get() != 0) {
+        auto report = vehicle.Open_telemetry_report();
+        report->Set<tm::Air_speed>(message->payload->airspeed.Get());
+    }
 }
 
 constexpr std::chrono::milliseconds
@@ -963,6 +1007,12 @@ Mavlink_vehicle::Mission_upload::Enable()
             Mavlink_demuxer::COMPONENT_ID_ANY);
 
     Try();
+}
+
+bool
+Mavlink_vehicle::Mission_upload::Is_active()
+{
+    return (timer != nullptr);
 }
 
 void

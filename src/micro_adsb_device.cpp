@@ -3,6 +3,10 @@
 // See LICENSE file for license details.
 
 #include <micro_adsb_device.h>
+#include <adsb_manager.h>
+#include <ugcs/vsm/timer_processor.h>
+#include <chrono>
+
 
 constexpr std::chrono::milliseconds Micro_adsb_device::CMD_RESPONSE_TIMEOUT;
 
@@ -19,10 +23,30 @@ line_handler(const std::string* str)
 
 Micro_adsb_device::Micro_adsb_device(
         ugcs::vsm::Io_stream::Ref stream, bool close_stream) :
-        Adsb_device("Micro ADS-B on [" + stream->Get_name() + "]"),
-        stream(stream), close_stream(close_stream),
-        filter(ugcs::vsm::Text_stream_filter::Create(stream, Get_completion_context()))
+        Adsb_device("MicroADSB on [" + stream->Get_name() + "]"),
+        stream(stream), close_stream(close_stream)
 {
+	friendly_name = "MicroADSB";
+	port_name = stream->Get_name();
+}
+
+void
+Micro_adsb_device::On_new_connection(
+		std::string str,
+		int i,
+		ugcs::vsm::Socket_address::Ptr sockaddr,
+		ugcs::vsm::Io_stream::Ref stream)
+{
+	if (Adsb_manager::Get_instance()->Is_shutting_down()) {
+		return;
+		LOG_DEBUG("New MicroADSB device detected during shutdown.");
+	}
+    Micro_adsb_device::Ptr device = Micro_adsb_device::Create(stream, false);
+    Adsb_manager::Get_instance()->On_new_connection(device,
+    												str,
+    												i,
+    												sockaddr,
+    												stream);
 }
 
 ugcs::vsm::Operation_waiter
@@ -82,6 +106,7 @@ Micro_adsb_device::On_enable()
      *
      * Frames are always being read and pushed to the device.
      */
+	filter = ugcs::vsm::Text_stream_filter::Create(stream, Get_completion_context());
     filter->Add_entry(
             regex::regex("@(([:xdigit:]){12})(([:xdigit:][:xdigit:])+);#(([:xdigit:]){8,});"),
             ugcs::vsm::Text_stream_filter::Make_match_handler(
@@ -95,10 +120,12 @@ Micro_adsb_device::On_enable()
 void
 Micro_adsb_device::On_disable()
 {
+	LOG_DEBUG("MicroADSB: disable in progress");
     while (!write_ops.empty()) {
         write_ops.front().Abort();
         write_ops.pop();
     }
+
     if (read_version_request) {
         read_version_request->Abort();
         read_version_request = nullptr;
@@ -111,7 +138,17 @@ Micro_adsb_device::On_disable()
     }
     init_frames_receiving_handler = Init_frames_receiving_handler();
 
+    if (heartbeat_timer != nullptr) {
+    	ugcs::vsm::Timer_processor::Get_instance()->Cancel_timer(heartbeat_timer);
+    	heartbeat_timer = nullptr;
+    	LOG_DEBUG("MicroADSB: Heartbeat service shutdown.");
+    }
     filter->Disable(close_stream);
+
+    stream->Write(
+                ugcs::vsm::Io_buffer::Create("#FF\r"));
+
+    stream->Close();
     filter = nullptr;
     stream = nullptr;
 }
@@ -124,7 +161,7 @@ Micro_adsb_device::Write_cmd(const std::string& cmd)
             Make_write_callback(
                     &Micro_adsb_device::On_write_completed,
                     Shared_from_this()),
-            Get_completion_context()));
+            adsb_worker));
 }
 
 void
@@ -222,6 +259,12 @@ Micro_adsb_device::Complete_init_frames_receiving_request(ugcs::vsm::Io_result r
     init_frames_receiving_handler.Set_args(result);
     init_frames_receiving_handler = Init_frames_receiving_handler();
     auto tmp = std::move(init_frames_receiving_request);
+
+    if (result == ugcs::vsm::Io_result::OK) {
+    // Start heartbeat service
+    	Init_heartbeat_try();
+    }
+
     tmp->Complete();
 }
 
@@ -230,7 +273,11 @@ Micro_adsb_device::Init_frames_receiving_try()
 {
     /* We want time stamp and frame counter. */
     Write_cmd("#43-33");
+    Write_cmd("#43-33");
     //Write_cmd("#43-34");
+    //Write_cmd("#39-02-");
+    Write_cmd("#39-02-05-64");
+    //Command above is to set MicroADSB to show nearby aircraft (by default it filters anything too close)
     /* Example output: #43-EF-00-00-00-00-00-00-00-00-00-00-00-00-00-00- */
     filter->Add_entry(
             regex::regex("#43-[:xdigit:][:xdigit:]-00-([:xdigit:]|-)*"),
@@ -265,4 +312,84 @@ Micro_adsb_device::Read_frame_handler_cb(
         Push_frame(ugcs::vsm::Io_buffer::Create(std::move(frame)));
         return true;
     }
+}
+
+void
+Micro_adsb_device::Init_heartbeat_try() {
+	/* Set timed requests for heartbeat */
+	ugcs::vsm::Timer_processor::Ptr timer = ugcs::vsm::Timer_processor::Get_instance();
+	LOG_DEBUG("Timer instance received.");
+	Micro_adsb_device::Ptr me = Shared_from_this();
+
+    filter->Add_entry(
+            regex::regex("#00-[:xdigit:][:xdigit:]-([:xdigit:][:xdigit:])-04([:xdigit:]|-)*"),
+            ugcs::vsm::Text_stream_filter::Make_match_handler(
+                    &Micro_adsb_device::Heartbeat_response_handler,
+                    Shared_from_this()),
+                    std::chrono::milliseconds(500));
+
+	heartbeat_timer = ugcs::vsm::Timer_processor::Get_instance()->Create_timer(
+		std::chrono::milliseconds(500),
+		ugcs::vsm::Make_callback(
+					&Micro_adsb_device::On_heartbeat_request,
+					Shared_from_this()),
+			adsb_worker);
+	LOG_DEBUG("Heartbeat request service initialized for MicroADSB.");
+
+}
+
+bool
+Micro_adsb_device::On_heartbeat_request() {
+	if(shutting_down) {
+		LOG_DEBUG("Heartbeat attempt on shutdown.");
+		return false;
+	}
+
+    Write_cmd("#00");
+    return true;
+}
+
+
+bool
+Micro_adsb_device::Heartbeat_response_handler(
+        regex::smatch*,
+        ugcs::vsm::Text_stream_filter::Lines_list*,
+        ugcs::vsm::Io_result result)
+{
+    if (result == ugcs::vsm::Io_result::OK) {
+    	Update_heartbeat();
+     	ASSERT (Get_is_heartbeat_ok());
+    }
+	else if (result == ugcs::vsm::Io_result::TIMED_OUT) {
+     	if (Get_is_heartbeat_shutdown()) {
+    		return false;
+     	}
+	}
+	else if (shutting_down) {
+		LOG_DEBUG("Heartbeat response on shutdown.");
+		return false;
+	}
+	else {
+		LOG_DEBUG("Device I/O error!");
+     	return false;
+	}
+    return true;
+}
+
+bool
+Micro_adsb_device::Get_is_heartbeat_ok() {
+	if (last_heartbeat_received > (std::chrono::system_clock::now() - std::chrono::seconds(1)))
+	{
+		return true;
+	}
+	return false;
+}
+
+bool
+Micro_adsb_device::Get_is_heartbeat_shutdown() {
+	if (last_heartbeat_received < (std::chrono::system_clock::now() - std::chrono::seconds(10)))
+	{
+		return true;
+	}
+	return false;
 }

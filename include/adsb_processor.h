@@ -32,6 +32,10 @@ public:
     void
     Add_device(Adsb_device::Ptr);
 
+    /** Removes ADS-B device from the listen set */
+    void
+    Remove_device(Adsb_device::Ptr);
+
     /** Get global or create new processor instance. */
     template <typename... Args>
     static Ptr
@@ -369,6 +373,10 @@ protected:
     /** Schedule next ADS-B frame reading for a given device. */
     void
     Schedule_frame_read(Adsb_device::Ptr, Adsb_device_ctx&);
+
+    /** Unschedule ADS-B frame reading for a specific context. */
+    void
+    Unschedule_frame_read(Adsb_device_ctx&);
 
     /** Raw ADS-B frames handler. */
     void

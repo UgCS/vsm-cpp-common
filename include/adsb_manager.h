@@ -11,8 +11,10 @@
 #include <ugcs/vsm/request_worker.h>
 #include <ugcs/vsm/io_stream.h>
 #include <micro_adsb_device.h>
-#include <unordered_set>
+#include <map>
 #include <adsb_processor.h>
+#include <adsb_device.h>
+
 
 /** Manager for ADS-B devices. Supposed to know about all available ADS-B
  * device drivers. Currently:
@@ -25,6 +27,40 @@ public:
 
     /** Construct manager with custom prefix. */
     Adsb_manager(const std::string&);
+
+    /** Get global or create new manager instance. */
+    template <typename... Args>
+    static Ptr
+    Get_instance(Args &&... args)
+    {
+        return singleton.Get_instance(std::forward<Args>(args)...);
+    }
+
+    /** New connection available for detection - called from specific device. */
+    void
+    On_new_connection(
+    		Adsb_device::Ptr,
+    		std::string,
+    		int,
+    		ugcs::vsm::Socket_address::Ptr,
+    		ugcs::vsm::Io_stream::Ref);
+
+    /** Returns completion context pointer */
+    ugcs::vsm::Request_completion_context::Ptr
+    Get_worker();
+
+    /** Adds a new Adsb_device to the device list */
+    bool
+    Add_device(Adsb_device::Ptr);
+
+    /** Removes an Adsb_device from the device list */
+    bool
+    Remove_device(Adsb_device::Ptr);
+
+    /** Returns true if shutting down */
+    bool
+    Is_shutting_down() { return shutting_down; }
+
 
 private:
 
@@ -43,23 +79,6 @@ private:
     /** Disable the manager in the processor context. */
     void
     Process_on_disable(ugcs::vsm::Request::Ptr);
-
-    /** New connection available for detection. */
-    void
-    On_new_connection(
-    		std::string,
-    		int,
-    		ugcs::vsm::Socket_address::Ptr,
-    		ugcs::vsm::Io_stream::Ref);
-
-    /** Frames receiving initialized on Micro ADS-B device. */
-    void
-    On_micro_adsb_init_frames_receiving(ugcs::vsm::Io_result,
-            Micro_adsb_device::Ptr, ugcs::vsm::Io_stream::Ref);
-
-    /** ADS-B frame received. */
-    void
-    On_frame_received(ugcs::vsm::Io_buffer::Ptr, ugcs::vsm::Io_result, Adsb_device::Ptr, ugcs::vsm::Io_stream::Ref);
 
     /** ADS-B report received. */
     void
@@ -105,6 +124,12 @@ private:
     std::unordered_map<ugcs::vsm::Io_stream::Ref, Detector_ctx, ugcs::vsm::Io_stream::Ref::Hasher>
         streams_under_detection;
 
+    /** Active ADS-B devices and status ok field. */
+    std::map<Adsb_device::Ptr, bool> devices;
+
+    /** Mutex for ADS-B devices collection. */
+    std::mutex adsb_devices_arbiter;
+
     /** The stream of ADS-B reports read by this manager. */
     Adsb_processor::Reports_stream::Ptr reports_stream;
 
@@ -113,6 +138,36 @@ private:
 
     /** Dedicated worker. */
     ugcs::vsm::Request_worker::Ptr worker;
+
+
+    /** Heartbeat service timer. */
+    ugcs::vsm::Timer_processor::Timer::Ptr heartbeat_service_timer;
+
+    /** Frames receiving initialized on Micro ADS-B device. */
+    void
+    On_init_frames_receiving(ugcs::vsm::Io_result,
+            Adsb_device::Ptr, ugcs::vsm::Io_stream::Ref);
+
+    /** ADS-B frame received. */
+    void
+    On_frame_received(ugcs::vsm::Io_buffer::Ptr, ugcs::vsm::Io_result, Adsb_device::Ptr, ugcs::vsm::Io_stream::Ref);
+
+    /** Happens every heartbeat service tick. */
+    bool
+    On_heartbeat_service_tick();
+
+    /** Happens on new UCS connection to CUCS processor. */
+    void
+    On_new_cucs_connection();
+
+    /** Handler for the new UCS connection event. */
+    void
+    On_new_cucs_connection_cb(ugcs::vsm::Request::Ptr request);
+
+    static ugcs::vsm::Singleton<Adsb_manager> singleton;
+
+    /** True when device is shutting down. */
+    bool shutting_down = false;
 
 };
 

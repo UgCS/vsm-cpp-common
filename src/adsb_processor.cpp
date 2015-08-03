@@ -4,6 +4,7 @@
 
 #include <adsb_processor.h>
 #include <cpr_decoder.h>
+//#include <iostream>
 
 ugcs::vsm::Singleton<Adsb_processor> Adsb_processor::singleton;
 
@@ -29,6 +30,29 @@ Adsb_processor::Add_device(Adsb_device::Ptr device)
     Adsb_device_ctx& ctx = aircrafts.emplace(device, Adsb_device_ctx()).first->second;
     if (_initiate_reading) {
         Schedule_frame_read(device, ctx);
+    }
+}
+
+void
+Adsb_processor::Remove_device(Adsb_device::Ptr device)
+{
+    std::unique_lock<std::mutex> lock(mutex);
+    /* Make a copy, to protect from aircrafts map modification during iteration. */
+    std::list<Adsb_device::Ptr> devices_copy;
+    auto iter = aircrafts.find(device);
+    if(iter != aircrafts.end()) {
+   		Unschedule_frame_read(iter->second);
+        for(auto& craft: iter->second.aircrafts) {
+            craft.second->Disable();
+        }
+        device->Disable();
+        aircrafts.erase(device);
+    		LOG_INFO("Device [%s] has been removed.",
+        		iter->first->Get_name().c_str());
+    }
+    else {
+    LOG_ERROR("Attempting to remove non-existent device!");
+    ASSERT(false);
     }
 }
 
@@ -524,6 +548,7 @@ Adsb_processor::Process_on_disable(Request::Ptr request)
 
     for (auto &iter: devices_copy) {
         /* Disable the device. */
+//    	if (iter->Is_enabled())
         iter->Disable();
     }
     for (auto& ctx: aircrafts) {
@@ -532,6 +557,7 @@ Adsb_processor::Process_on_disable(Request::Ptr request)
             craft.second->Disable();
         }
     }
+
     aircrafts.clear();
     if (streams.size()) {
         LOG_ERR("Adsb processor still has %zu report streams opened while disabling.",
@@ -561,6 +587,13 @@ Adsb_processor::Schedule_frame_read(
 }
 
 void
+Adsb_processor::Unschedule_frame_read(
+        Adsb_device_ctx& ctx)
+{
+    ctx.read_frame_op.Abort();
+}
+//XXX
+void
 Adsb_processor::Adsb_frame_received(
         ugcs::vsm::Io_buffer::Ptr buffer,
         ugcs::vsm::Io_result result,
@@ -569,14 +602,18 @@ Adsb_processor::Adsb_frame_received(
     auto ctx_iter = aircrafts.find(device);
     ASSERT(ctx_iter != aircrafts.end());
 
+//    std::cout << "Frame received: " << buffer->Get_hex() << ". ICAO address: [" << buffer->Get_hex().substr(2, 6);
+
     if (result == ugcs::vsm::Io_result::OK) {
         Schedule_frame_read(device, ctx_iter->second);
         if (buffer->Get_length() == ugcs::vsm::Adsb_frame::SIZE) {
             ugcs::vsm::Adsb_frame::Ptr frame = ugcs::vsm::Adsb_frame::Create(buffer);
             if (!frame->Verify_checksum()) {
+//            	std::cout << "] Checksum error!\n";
                 LOG_DEBUG("ADS-B frame dropped, bad checksum.");
                 return;
             }
+//        	std::cout << "]\n";
             switch (frame->Get_DF()) {
             case ugcs::vsm::Adsb_frame::Downlink_format::DF_17:
                 Process_DF_17(frame, device);
@@ -588,10 +625,12 @@ Adsb_processor::Adsb_frame_received(
                 Process_DF_19(frame, device);
                 break;
             default:
+//            	std::cout << "] Wrong format!\n";
                 LOG_DEBUG("Unsupported ADS-B downlink format (%d), dropped.", frame->Get_DF());
                 break;
             }
         } else {
+//        	std::cout << "] Wrong size!\n";
             LOG_DEBUG("ADS-B frame incorrect size (%zu)", buffer->Get_length());
         }
     } else {
@@ -621,7 +660,7 @@ Adsb_processor::Lookup_aircarft(
     auto iter = map.find(address);
     if (iter == map.end()) {
         if (check_limit && map.size() >= MAX_AIRCRAFTS) {
-            LOG_WARNING("Too many ADS-B aircrafts, new aircraft [%s] ignored. "
+            LOG_WARNING("Too many ADS-B aircraft, new aircraft [%s] ignored. "
                         "Do you really have around %zu visible aircrafts? "
                         "If not, please submit a bug report.",
                         address.To_hex_string().c_str(),
@@ -662,7 +701,7 @@ Adsb_processor::Aircraft_destroyed(
     auto& map = ctx->second.aircrafts;
     auto iter = map.find(address);
     ASSERT(iter != map.end());
-    LOG_INFO("Aircraft %s destroyed, device [%s] still has %zu aircrafts.",
+    LOG_INFO("Aircraft %s removed, device [%s] still has %zu aircraft.",
             iter->second->To_string().c_str(),
             device->Get_name().c_str(), map.size() - 1);
     iter->second->Disable();
