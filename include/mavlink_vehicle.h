@@ -46,11 +46,14 @@ public:
             heartbeat(*this),
             statistics(*this),
             read_parameters(*this),
+            read_version(*this),
+            do_commands(*this),
             write_parameters(*this),
             read_waypoints(*this),
             telemetry(*this),
             clear_all_missions(*this),
             mission_upload(*this)
+
     {
         ASSERT(real_system_id != ugcs::vsm::Mavlink_demuxer::SYSTEM_ID_ANY);
     }
@@ -184,6 +187,11 @@ protected:
 
         /** Convenience builder for next action callback. Failure by default. */
         DEFINE_CALLBACK_BUILDER(Make_next_action, (bool), (false))
+
+        enum {
+            ATTEMPTS = 3,
+            RETRY_TIMEOUT = 1,
+        };
 
         Activity(Mavlink_vehicle& vehicle) :
             vehicle(vehicle)
@@ -429,14 +437,23 @@ protected:
 
         using Activity::Activity;
 
-        enum {
-            ATTEMPTS = 3,
-            RETRY_TIMEOUT = 1,
-        };
+        /** Handler for status text. */
+        typedef ugcs::vsm::Callback_proxy<
+                void,
+                ugcs::vsm::mavlink::Pld_param_value>
+            Parameter_handler;
 
-        /** Start parameters reading. */
+        /** Convenience builder. */
+        DEFINE_CALLBACK_BUILDER(
+                Make_parameter_handler,
+                (ugcs::vsm::mavlink::Pld_param_value),
+                (ugcs::vsm::mavlink::Pld_param_value()));
+
+        /** Start parameters reading.
+         * @param names set of parameter names to retrieve.
+         * If names not given - read all parameters. */
         void
-        Enable();
+        Enable(std::unordered_set<std::string> names);
 
         /** Stop parameters reading. */
         virtual void
@@ -475,22 +492,107 @@ protected:
         /** Number of read attempts left. */
         size_t attempts_left;
 
-        /** Parameters read from the vehicle. Maps from parameter name to
-         * the value.
-         */
-        std::unordered_map<std::string, ugcs::vsm::mavlink::Pld_param_value> parameters;
+        /** Optional handler. Called on  each retrieved parameter. */
+        Parameter_handler parameter_handler;
+
+        std::unordered_set<std::string> param_names;
     } read_parameters;
+
+    /** Data related to initial reading of parameters. */
+    class Read_version: public Activity {
+    public:
+
+        using Activity::Activity;
+
+        /** Handler for status text. */
+        typedef ugcs::vsm::Callback_proxy<
+                void,
+                ugcs::vsm::mavlink::Pld_autopilot_version>
+            Version_handler;
+
+        /** Convenience builder. */
+        DEFINE_CALLBACK_BUILDER(
+                Make_version_handler,
+                (ugcs::vsm::mavlink::Pld_autopilot_version),
+                (ugcs::vsm::mavlink::Pld_autopilot_version()));
+
+        /** Start parameters reading.
+         * @param names set of parameter names to retrieve.
+         * If names not given - read all parameters. */
+        void
+        Enable();
+
+        /** Stop parameters reading. */
+        virtual void
+        On_disable() override;
+
+        /** Try next parameters read attempt. */
+        bool
+        Try();
+
+        /** Schedule retry timer. */
+        void
+        Schedule_timer();
+
+        /** Parameter received. */
+        void
+        On_version(ugcs::vsm::mavlink::Message<ugcs::vsm::mavlink::MESSAGE_ID::AUTOPILOT_VERSION>::Ptr);
+
+        /** Retry timer. */
+        ugcs::vsm::Timer_processor::Timer::Ptr timer;
+
+        /** Number of read attempts left. */
+        size_t attempts_left;
+
+        /** Optional handler. Called on  each retrieved parameter. */
+        Version_handler version_handler;
+
+    } read_version;
+
+    /** Write parameters to the vehicle. */
+    class Do_command_long: public Activity {
+    public:
+
+        using Activity::Activity;
+
+        /** List of commands. */
+        typedef std::vector<ugcs::vsm::mavlink::Pld_command_long> List;
+
+        /** Start parameters writing. */
+        void
+        Enable(const List& commands);
+
+        /** Stop parameters writing. */
+        virtual void
+        On_disable() override;
+
+        /** Command ack received. */
+        void
+        On_command_ack(ugcs::vsm::mavlink::Message<ugcs::vsm::mavlink::MESSAGE_ID::COMMAND_ACK>::Ptr);
+
+        /** Try next parameters write attempt. */
+        bool
+        Try();
+
+        /** Schedule retry timer. */
+        void
+        Schedule_timer();
+
+        /** Retry timer. */
+        ugcs::vsm::Timer_processor::Timer::Ptr timer;
+
+        /** Number of write attempts left. */
+        size_t attempts_left;
+
+        /** commands to write. */
+        List commands;
+    } do_commands;
 
     /** Write parameters to the vehicle. */
     class Write_parameters: public Activity {
     public:
 
         using Activity::Activity;
-
-        enum {
-            ATTEMPTS = 3,
-            RETRY_TIMEOUT = 1,
-        };
 
         /** List of parameters. */
         typedef std::vector<ugcs::vsm::mavlink::Pld_param_set> List;
@@ -528,11 +630,30 @@ protected:
     /** Data related to waypoints reading. */
     class Read_waypoints: public Activity {
     public:
-        using Activity::Activity;
+        // This is needed to initialize home_location correctly.
+        // "using Activity::Activity;" here produces compiler error.
+        Read_waypoints(Mavlink_vehicle& vehicle):
+            Activity(vehicle){};
+
+        /** Handler for status text. */
+        typedef ugcs::vsm::Callback_proxy<
+                void,
+                ugcs::vsm::mavlink::Pld_mission_item>
+            Mission_item_handler;
+
+        /** Convenience builder. */
+        DEFINE_CALLBACK_BUILDER(
+                Make_mission_item_handler,
+                (ugcs::vsm::mavlink::Pld_mission_item),
+                (ugcs::vsm::mavlink::Pld_mission_item()));
 
         /** Start waypoints reading. */
         void
         Enable();
+
+        /** On ardupilot WP0 is home location, so use this activity to retrieve HL */
+        void
+        Get_home_location();
 
         /** Stop waypoints reading. */
         virtual void
@@ -555,6 +676,8 @@ protected:
 
         /** Current waypoint sequence number to read. */
         size_t waypoint_to_read;
+
+        Mission_item_handler item_handler;
     } read_waypoints;
 
     class Telemetry: public Activity {

@@ -68,7 +68,6 @@ Mavlink_vehicle::Get_mav_type() const
 void
 Mavlink_vehicle::Wait_for_vehicle()
 {
-    Disable_activities();
     heartbeat.Enable();
     statistics.Enable();
 }
@@ -243,6 +242,12 @@ Mavlink_vehicle::Heartbeat::On_heartbeat(
         mavlink::Message<mavlink::MESSAGE_ID::HEARTBEAT>::Ptr message)
 {
     received_count++;
+
+    // Ignore heartbeats of type GCS. Sent by Ardupilot 3.3.1 SITL.
+    if (message->payload->type == mavlink::MAV_TYPE_GCS) {
+        return;
+    }
+
     mavlink::MAV_STATE system_status =
             static_cast<mavlink::MAV_STATE>(message->payload->system_status.Get());
 
@@ -265,6 +270,7 @@ Mavlink_vehicle::Heartbeat::On_timer()
     if (!received_count) {
         if (first_ok_received) {
             VEHICLE_LOG_INF(vehicle, "Heartbeat lost. Still waiting...");
+            vehicle.Disable_activities();
             vehicle.Wait_for_vehicle();
         } else {
             VEHICLE_LOG_INF(vehicle, "Heartbeat lost. Vehicle disconnected.");
@@ -331,10 +337,10 @@ Mavlink_vehicle::Statistics::On_status_text(
 }
 
 void
-Mavlink_vehicle::Read_parameters::Enable()
+Mavlink_vehicle::Read_parameters::Enable(std::unordered_set<std::string> names)
 {
     attempts_left = ATTEMPTS;
-    parameters.clear();
+    param_names = std::move(names);
 
     Register_mavlink_handler<mavlink::MESSAGE_ID::PARAM_VALUE>(
             &Read_parameters::On_param_value, this, Mavlink_demuxer::COMPONENT_ID_ANY);
@@ -348,7 +354,7 @@ Mavlink_vehicle::Read_parameters::On_disable()
         timer->Cancel();
         timer = nullptr;
     }
-
+    param_names.clear();
     Unregister_mavlink_handlers();
 }
 
@@ -359,9 +365,20 @@ Mavlink_vehicle::Read_parameters::Try()
         Disable();
         return false;
     }
-    mavlink::Pld_param_request_list msg;
-    Fill_target_ids(msg);
-    Send_message(msg);
+    if (param_names.empty()) {
+        mavlink::Pld_param_request_list msg;
+        Fill_target_ids(msg);
+        Send_message(msg);
+    } else {
+        // Read single parameter
+        mavlink::Pld_param_request_read msg;
+        Fill_target_ids(msg);
+        msg->param_index = -1;
+        for (auto& n : param_names) {
+            msg->param_id = n;
+            Send_message(msg);
+        }
+    }
     Schedule_timer();
     return false;
 }
@@ -401,13 +418,84 @@ Mavlink_vehicle::Read_parameters::On_param_value(
                             message->payload->param_id.Get_string().c_str(),
                             message->payload->param_index.Get());
     }
-    parameters[message->payload->param_id.Get_string()] = message->payload;
-    if (message->payload->param_count - 1 ==
-        message->payload->param_index) {
-        Disable();
-    } else {
-        Schedule_timer();
+
+    if (parameter_handler) {
+        parameter_handler(message->payload);
     }
+
+    if (param_names.empty()) {
+        // all parameters.
+        if (message->payload->param_count - 1 == message->payload->param_index) {
+            Disable();
+        } else {
+            Schedule_timer();
+        }
+    } else {
+        // single parameters
+        param_names.erase(message->payload->param_id.Get_string());
+        if (param_names.empty()) {
+            // no more parameters;
+            Disable();
+        } else {
+            // wait for next one.
+            Schedule_timer();
+        }
+    }
+}
+
+void
+Mavlink_vehicle::Read_version::Enable()
+{
+    attempts_left = ATTEMPTS;
+    Register_mavlink_handler<mavlink::MESSAGE_ID::AUTOPILOT_VERSION>(
+            &Read_version::On_version, this, Mavlink_demuxer::COMPONENT_ID_ANY);
+    Try();
+}
+
+void
+Mavlink_vehicle::Read_version::On_disable()
+{
+    if (timer) {
+        timer->Cancel();
+        timer = nullptr;
+    }
+    Unregister_mavlink_handlers();
+}
+
+bool
+Mavlink_vehicle::Read_version::Try()
+{
+    if (!attempts_left--) {
+        Disable();
+        return false;
+    }
+    mavlink::apm::Pld_autopilot_version_request msg;
+    Fill_target_ids(msg);
+    Send_message(msg);
+    Schedule_timer();
+    return false;
+}
+
+void
+Mavlink_vehicle::Read_version::Schedule_timer()
+{
+    if (timer) {
+        timer->Cancel();
+    }
+    timer = Timer_processor::Get_instance()->Create_timer(
+            std::chrono::seconds(RETRY_TIMEOUT),
+            Make_callback(&Read_version::Try, this),
+            vehicle.Get_completion_ctx());
+}
+
+void
+Mavlink_vehicle::Read_version::On_version(
+        mavlink::Message<mavlink::MESSAGE_ID::AUTOPILOT_VERSION>::Ptr message)
+{
+    if (version_handler) {
+        version_handler(message->payload);
+    }
+    Disable();
 }
 
 void
@@ -502,6 +590,85 @@ Mavlink_vehicle::Write_parameters::Schedule_timer()
 }
 
 void
+Mavlink_vehicle::Do_command_long::Enable(const List& commands_list)
+{
+    Register_mavlink_handler<mavlink::MESSAGE_ID::COMMAND_ACK>(
+            &Do_command_long::On_command_ack, this, Mavlink_demuxer::COMPONENT_ID_ANY);
+
+    commands = commands_list;
+    attempts_left = ATTEMPTS;
+    Try();
+}
+
+void
+Mavlink_vehicle::Do_command_long::On_disable()
+{
+    if (timer) {
+        timer->Cancel();
+        timer = nullptr;
+    }
+    Unregister_mavlink_handlers();
+    commands.clear();
+}
+
+void
+Mavlink_vehicle::Do_command_long::On_command_ack(
+        mavlink::Message<mavlink::MESSAGE_ID::COMMAND_ACK>::Ptr message)
+{
+    VEHICLE_LOG_DBG(vehicle, "COMAMND_ACK for command %d, res=%d",
+            message->payload->command.Get(), message->payload->result.Get());
+
+    auto cmd = commands.front();
+    if (message->payload->command.Get() == cmd->command.Get()) {
+        // This is a response to our command.
+        commands.pop_back();
+        if (message->payload->result == mavlink::MAV_RESULT::MAV_RESULT_ACCEPTED) {
+            attempts_left = ATTEMPTS;
+            Try();
+        } else {
+            Call_next_action(false);
+            // command failed. return failure to ucs.
+            commands.clear();
+            Disable();
+        }
+    } else {
+        VEHICLE_LOG_ERR(vehicle, "Unexpected command acked. Expected: %s", cmd.Get_name());
+    }
+}
+
+bool
+Mavlink_vehicle::Do_command_long::Try()
+{
+    if (commands.empty()) {
+        Call_next_action(true);
+        return false;
+    }
+
+    if (!attempts_left--) {
+        VEHICLE_LOG_INF(vehicle, "All command attempts failed.");
+        Call_next_action(false);
+        return false;
+    }
+    VEHICLE_LOG_INF(vehicle, "Sending command %s",
+        commands.back().Get_name());
+    Send_message(commands.back());
+    Schedule_timer();
+    return false;
+}
+
+void
+Mavlink_vehicle::Do_command_long::Schedule_timer()
+{
+    if (timer) {
+        timer->Cancel();
+    }
+    timer = Timer_processor::Get_instance()->Create_timer(
+            std::chrono::seconds(RETRY_TIMEOUT),
+            Make_callback(&Do_command_long::Try, this),
+            vehicle.Get_completion_ctx());
+}
+
+void
 Mavlink_vehicle::Read_waypoints::Enable()
 {
     mission_count_handler =
@@ -513,6 +680,18 @@ Mavlink_vehicle::Read_waypoints::Enable()
     mavlink::Pld_mission_request_list req;
     Fill_target_ids(req);
     Send_message(req);
+}
+
+void
+Mavlink_vehicle::Read_waypoints::Get_home_location()
+{
+    waypoints_total = 1;
+    waypoint_to_read = 0;
+    Register_mavlink_handler<mavlink::MESSAGE_ID::MISSION_ITEM>(
+            &Read_waypoints::On_item,
+            this,
+            Mavlink_demuxer::COMPONENT_ID_ANY);
+    Read_next();
 }
 
 void
@@ -553,8 +732,9 @@ Mavlink_vehicle::Read_waypoints::On_item(
     }
     if (message->payload->seq == waypoint_to_read) {
         waypoint_to_read++;
-        VEHICLE_LOG_DBG(vehicle, "Waypoint %zu received:", waypoint_to_read);
-        VEHICLE_LOG_DBG(vehicle, "%s", message->payload.Dump().c_str());
+        if (item_handler) {
+            item_handler(message->payload);
+        }
     }
     Read_next();
 }
@@ -668,7 +848,11 @@ Mavlink_vehicle::Telemetry::On_telemetry_check()
         if (!vehicle.Is_mission_upload_active()) {
             VEHICLE_LOG_INF(vehicle, "Requesting telemetry...");
             for (mavlink::MAV_DATA_STREAM id : {
-                mavlink::MAV_DATA_STREAM::MAV_DATA_STREAM_ALL}) {
+                mavlink::MAV_DATA_STREAM::MAV_DATA_STREAM_EXTRA1,   // attitude
+                mavlink::MAV_DATA_STREAM::MAV_DATA_STREAM_EXTRA2,   // vfr_hud
+                mavlink::MAV_DATA_STREAM::MAV_DATA_STREAM_POSITION, // gps
+                mavlink::MAV_DATA_STREAM::MAV_DATA_STREAM_EXTENDED_STATUS // gps fix & sysstatus
+                }) {
                 mavlink::Pld_request_data_stream msg;
                 Fill_target_ids(msg);
                 msg->req_stream_id = id;
@@ -760,7 +944,30 @@ Mavlink_vehicle::Telemetry::On_sys_status(
         report->Set<tm::Battery_current>(
             static_cast<double>(message->payload->current_battery) / 100.0);
     }
+
     report->Set<tm::Link_quality>(link_quality);
+
+    // ArDrone and ArduPlane always report 0 in onboard_control_sensors_health field,
+    // So, set this only for arducopter.
+    if (vehicle.Get_autopilot() == mavlink::MAV_AUTOPILOT_ARDUPILOTMEGA) {
+        switch (vehicle.Get_mav_type()) {
+        case mavlink::MAV_TYPE::MAV_TYPE_QUADROTOR:
+        case mavlink::MAV_TYPE::MAV_TYPE_HEXAROTOR:
+        case mavlink::MAV_TYPE::MAV_TYPE_OCTOROTOR:
+        case mavlink::MAV_TYPE::MAV_TYPE_TRICOPTER:
+        case mavlink::MAV_TYPE::MAV_TYPE_HELICOPTER:
+        case mavlink::MAV_TYPE::MAV_TYPE_COAXIAL:
+            if (message->payload->onboard_control_sensors_health & mavlink::MAV_SYS_STATUS_SENSOR_RC_RECEIVER) {
+                report->Set<tm::Rclink_quality>(1);
+            } else {
+                report->Set<tm::Rclink_quality>(0);
+            }
+            break;
+        default:
+            break;
+        }
+    }
+
 }
 
 void

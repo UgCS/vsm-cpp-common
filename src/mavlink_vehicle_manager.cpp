@@ -246,6 +246,10 @@ Mavlink_vehicle_manager::On_heartbeat(
         mavlink::Message<mavlink::MESSAGE_ID::HEARTBEAT>::Ptr message,
         Mavlink_vehicle::Mavlink_stream::Ptr mav_stream)
 {
+    // Ignore heartbeats of type GCS. Sent by Ardupilot 3.3.1 SITL.
+    if (message->payload->type == mavlink::MAV_TYPE_GCS) {
+        return;
+    }
     std::string serial_number;
     std::string model_name;
     auto system_id = message->Get_sender_system_id();
