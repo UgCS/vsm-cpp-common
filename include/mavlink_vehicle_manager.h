@@ -58,6 +58,7 @@ protected:
     		int baud,
     		ugcs::vsm::Socket_address::Ptr,
     		ugcs::vsm::Io_stream::Ref,
+    		ugcs::vsm::mavlink::MAV_AUTOPILOT autopilot_type,
     		bool detect_frame = false,
     		ugcs::vsm::Optional<std::string> custom_model_name =
     				ugcs::vsm::Optional<std::string>(),
@@ -146,12 +147,14 @@ private:
                 bool detect_frame,
                 ugcs::vsm::Socket_address::Ptr peer_addr,
                 ugcs::vsm::Optional<std::string> custom_model,
-                ugcs::vsm::Optional<std::string> custom_serial):
+                ugcs::vsm::Optional<std::string> custom_serial,
+                ugcs::vsm::mavlink::MAV_AUTOPILOT autopilot_type):
             timeout(timeout),
             frame_detection_retries(detect_frame?FRAME_DETECTION_RETRIES:0),
             custom_model(custom_model),
             custom_serial(custom_serial),
-            peer_addr(peer_addr)
+            peer_addr(peer_addr),
+            autopilot_type(autopilot_type)
             {}
 
         ~Detector_ctx()
@@ -168,6 +171,7 @@ private:
         ugcs::vsm::Optional<std::string> custom_model;
         ugcs::vsm::Optional<std::string> custom_serial;
         ugcs::vsm::Socket_address::Ptr peer_addr;
+        ugcs::vsm::mavlink::MAV_AUTOPILOT autopilot_type;
 
         /** Current stream read operation. */
         ugcs::vsm::Operation_waiter read_op;

@@ -9,6 +9,8 @@
 #define _MAVLINK_VEHICLE_H_
 
 #include <ugcs/vsm/vsm.h>
+#include <ugcs/vsm/mavlink.h>
+#include <stdint.h>
 #include <sstream>
 
 /** Mavlink compatible vehicle class. It contains the functionality which
@@ -29,20 +31,21 @@ public:
 
     template<typename... Args>
     Mavlink_vehicle(
-            ugcs::vsm::Mavlink_demuxer::System_id system_id,
-            ugcs::vsm::Mavlink_demuxer::Component_id component_id,
-            ugcs::vsm::mavlink::MAV_TYPE type,
-            ugcs::vsm::mavlink::MAV_AUTOPILOT autopilot,
-            const ugcs::vsm::Vehicle::Capabilities& capabilities,
-            ugcs::vsm::Io_stream::Ref stream,
-            ugcs::vsm::Optional<std::string> mission_dump_path,
-            Args &&... args) :
-    ugcs::vsm::Vehicle(type, autopilot, capabilities,
-            std::forward<Args>(args)...),
-            real_system_id(system_id),
-            real_component_id(component_id),
-            mission_dump_path(mission_dump_path),
-            mav_stream(Mavlink_stream::Create(stream, ugcs::vsm::mavlink::apm::Extension::Get())),
+        ugcs::vsm::Mavlink_demuxer::System_id system_id,
+        ugcs::vsm::Mavlink_demuxer::Component_id component_id,
+        ugcs::vsm::mavlink::MAV_TYPE type,
+        ugcs::vsm::mavlink::MAV_AUTOPILOT autopilot,
+        const ugcs::vsm::Vehicle::Capabilities& capabilities,
+        ugcs::vsm::Io_stream::Ref stream,
+        ugcs::vsm::Optional<std::string> mission_dump_path,
+        Args &&... args) :
+            ugcs::vsm::Vehicle(
+                type, autopilot, capabilities,
+                std::forward<Args>(args)...),
+                real_system_id(system_id),
+                real_component_id(component_id),
+                mission_dump_path(mission_dump_path),
+                mav_stream(Mavlink_stream::Create(stream, ugcs::vsm::mavlink::apm::Extension::Get())),
             heartbeat(*this),
             statistics(*this),
             read_parameters(*this),
@@ -51,11 +54,10 @@ public:
             write_parameters(*this),
             read_waypoints(*this),
             telemetry(*this),
-            clear_all_missions(*this),
             mission_upload(*this)
-
     {
         ASSERT(real_system_id != ugcs::vsm::Mavlink_demuxer::SYSTEM_ID_ANY);
+        port_name = stream->Get_name();
     }
 
     /** System ID of a VSM itself. Thats is the value seen by vehicle. Value
@@ -86,6 +88,9 @@ protected:
     /** to differentiate first time we got boot time from vehicle */
     bool last_known_vehicle_boot_time_known = false;
 
+    // Allow vsm to report relative altitude. Used for ardupilot 3.3.1+ to report only amsl altitudes.
+    bool report_relative_altitude = true;
+
     /** Uses the above variables to detect recent boot and
      * reset altitude origin.
      * NOTE: This function should only be called from GPS_RAW_INT message
@@ -113,18 +118,14 @@ protected:
     void
     On_disable_vehicle(ugcs::vsm::Request::Ptr);
 
-    /** Get the type of Mavlink vehicle. */
-    ugcs::vsm::mavlink::MAV_TYPE
-    Get_mav_type() const;
-
     /** Reset state machine to initial state and start vehicle waiting. */
     void
     Wait_for_vehicle();
 
-    bool
-    Default_mavlink_handler(
-            ugcs::vsm::mavlink::MESSAGE_ID_TYPE,
-            typename Mavlink_kind::System_id, uint8_t);
+
+    /** Get the type of Mavlink vehicle. */
+    ugcs::vsm::mavlink::MAV_TYPE
+    Get_mav_type() const;
 
     /** Read handler for the data recieved from the vehicle. */
     void
@@ -143,6 +144,16 @@ protected:
     Process_heartbeat(
             ugcs::vsm::mavlink::Message<ugcs::vsm::mavlink::MESSAGE_ID::HEARTBEAT>::Ptr);
 
+    void
+    Send_message(ugcs::vsm::mavlink::Payload_base& payload);
+
+    void
+    Set_message_interval(ugcs::vsm::mavlink::MESSAGE_ID_TYPE id, int interval);
+
+    /** Get flight base mode. */
+    uint8_t
+    Get_base_mode() { return base_mode; };
+
     /** Invoked when write operation to the vehicle has timed out.
      */
     void
@@ -150,17 +161,23 @@ protected:
             const ugcs::vsm::Operation_waiter::Ptr&,
             Mavlink_stream::Weak_ptr);
 
+    static const std::string
+    Mav_result_to_string(int);
+
+    static const std::string
+    Mav_mission_result_to_string(int);
+
     /** Real system id of the vehicle, i.e. the physical vehicle which is
      * available through the Mavlink stream. It has nothing to do with
      * the system id visible to UCS server.
      */
-    const ugcs::vsm::Mavlink_demuxer::System_id real_system_id;
+    ugcs::vsm::Mavlink_demuxer::System_id real_system_id;
 
     /** This is the component which sent hearbeat to VSM.
      * VSM uses this as target component for all mavlink messges
      * it sends to vehicle.
      */
-    const ugcs::vsm::Mavlink_demuxer::Component_id real_component_id;
+    ugcs::vsm::Mavlink_demuxer::Component_id real_component_id;
 
     /** Path for mission dumping. */
     ugcs::vsm::Optional<std::string> mission_dump_path;
@@ -170,6 +187,11 @@ protected:
 
     /** Current Mavlink read operation. */
     ugcs::vsm::Operation_waiter read_op;
+
+    uint8_t base_mode = 0;
+
+    bool
+    Is_armed() {return (base_mode & ugcs::vsm::mavlink::MAV_MODE_FLAG::MAV_MODE_FLAG_SAFETY_ARMED);};
 
     /** Represents an activity ongoing with a vehicle. This is mostly a
      * convenience class to separate activity-related methods and members.
@@ -183,10 +205,10 @@ protected:
         /** Handler for a next action to execute when activity finishes.
          * Parameter denotes whether activity has finished successfully (true)
          * or not (false). */
-        typedef ugcs::vsm::Callback_proxy<void, bool> Next_action;
+        typedef ugcs::vsm::Callback_proxy<void, bool, std::string> Next_action;
 
         /** Convenience builder for next action callback. Failure by default. */
-        DEFINE_CALLBACK_BUILDER(Make_next_action, (bool), (false))
+        DEFINE_CALLBACK_BUILDER(Make_next_action, (bool, std::string), (false, std::string()));
 
         enum {
             ATTEMPTS = 3,
@@ -218,7 +240,7 @@ protected:
         /** Call next action, if any. Activity is disabled before calling
          * next action handler. */
         void
-        Call_next_action(bool success);
+        Call_next_action(bool success, const std::string& msg);
 
         /**
          * Helper for registration of vehicle Mavlink message handlers. System
@@ -373,9 +395,6 @@ protected:
 
         bool
         On_timer();
-
-        bool
-        Is_system_status_ok(ugcs::vsm::mavlink::MAV_STATE system_status);
 
         bool first_ok_received = false;
 
@@ -783,6 +802,9 @@ protected:
         On_radio(ugcs::vsm::mavlink::Message<ugcs::vsm::mavlink::apm::MESSAGE_ID::RADIO,
                                        ugcs::vsm::mavlink::apm::Extension>::Ptr);
 
+        void
+        On_altitude(ugcs::vsm::mavlink::Message<ugcs::vsm::mavlink::MESSAGE_ID::ALTITUDE>::Ptr);
+
         /** Watchdog timer for telemetry receiving from vehicle. */
         ugcs::vsm::Timer_processor::Timer::Ptr watchdog_timer;
 
@@ -829,50 +851,6 @@ protected:
         double prev_altitude = 0;
 
     } telemetry;
-
-    /** Data related to clear all missions processing. */
-    class Clear_all_missions : public Activity {
-    public:
-
-        using Activity::Activity;
-
-        /** Related constants. */
-        enum {
-            ATTEMPTS = 3,
-            /** In seconds. */
-            RETRY_TIMEOUT = 1,
-        };
-
-        /** Try to clear missions on a vehicle. */
-        bool
-        Try();
-
-        /** Mission ack received for mission clear all. */
-        void
-        On_mission_ack(ugcs::vsm::mavlink::Message<ugcs::vsm::mavlink::MESSAGE_ID::MISSION_ACK>::Ptr);
-
-        /** Enable class and start mission clearing with optional task request
-         * continuation. */
-        void
-        Enable(const ugcs::vsm::Clear_all_missions&);
-
-        /** Disable this class and cancel any existing request. */
-        virtual void
-        On_disable() override;
-
-        /** Schedule timer for retry operation. */
-        void
-        Schedule_timer();
-
-        /** Information about mission clearing. */
-        ugcs::vsm::Clear_all_missions info;
-
-        /** Remaining attempts towards vehicle. */
-        size_t remaining_attempts = 0;
-
-        /** Retry timer. */
-        ugcs::vsm::Timer_processor::Timer::Ptr timer;
-    } clear_all_missions;
 
     /** Mavlink mission upload protocol. */
     class Mission_upload: public Activity {
@@ -956,6 +934,7 @@ protected:
     friend class Ardupilot_vehicle;
     friend class Emulator_vehicle;
     friend class Ardrone_vehicle;
+    friend class Px4_vehicle;
 };
 
 

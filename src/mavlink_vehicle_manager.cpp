@@ -250,6 +250,14 @@ Mavlink_vehicle_manager::On_heartbeat(
     if (message->payload->type == mavlink::MAV_TYPE_GCS) {
         return;
     }
+
+    // Ignore uninitialized vehicle.
+    if (    message->payload->system_status == mavlink::MAV_STATE_UNINIT
+        ||  message->payload->system_status == mavlink::MAV_STATE_BOOT
+        ||  message->payload->system_status == mavlink::MAV_STATE_POWEROFF) {
+        return;
+    }
+
     std::string serial_number;
     std::string model_name;
     auto system_id = message->Get_sender_system_id();
@@ -257,31 +265,42 @@ Mavlink_vehicle_manager::On_heartbeat(
 
     auto det_iter = detectors.find(mav_stream);
     if (det_iter != detectors.end()) {
-        det_iter->second.frame_type = static_cast<mavlink::MAV_TYPE>(message->payload->type.Get());
-        if (det_iter->second.frame_detection_retries) {
-            // Try frame detection only once.
-            det_iter->second.frame_detection_retries--;
-
-            mavlink::Pld_param_request_read payload;
-            payload->target_component = component_id;
-            payload->target_system = system_id;
-            payload->param_id = "FRAME";
-            payload->param_index = -1;
-
-            mav_stream->Send_message(
-                    payload,
-                    Mavlink_vehicle::VSM_SYSTEM_ID,
-                    Mavlink_vehicle::VSM_COMPONENT_ID,
-                    Mavlink_vehicle::WRITE_TIMEOUT,
-                    Make_timeout_callback(
-                            &Mavlink_vehicle_manager::Write_to_vehicle_timed_out, this, mav_stream),
-                            Get_worker());
+        if (message->payload->autopilot != det_iter->second.autopilot_type) {
+            LOG("Failed detection expect %d, received %d.",
+                static_cast<int>(det_iter->second.autopilot_type),
+                static_cast<int>(message->payload->autopilot));
+            auto stream = mav_stream->Get_stream();
+            mav_stream->Disable();
+            detectors.erase(det_iter);
+            /* Signal transport_detector that this is not our protocol. */
+            Transport_detector::Get_instance()->Protocol_not_detected(stream);
         } else {
-            Create_vehicle_wrapper(
-                    mav_stream,
-                    system_id,
-                    component_id
-                    );
+            det_iter->second.frame_type = static_cast<mavlink::MAV_TYPE>(message->payload->type.Get());
+            if (det_iter->second.frame_detection_retries) {
+                // Try frame detection only once.
+                det_iter->second.frame_detection_retries--;
+
+                mavlink::Pld_param_request_read payload;
+                payload->target_component = component_id;
+                payload->target_system = system_id;
+                payload->param_id = "FRAME";
+                payload->param_index = -1;
+
+                mav_stream->Send_message(
+                        payload,
+                        Mavlink_vehicle::VSM_SYSTEM_ID,
+                        Mavlink_vehicle::VSM_COMPONENT_ID,
+                        Mavlink_vehicle::WRITE_TIMEOUT,
+                        Make_timeout_callback(
+                                &Mavlink_vehicle_manager::Write_to_vehicle_timed_out, this, mav_stream),
+                                Get_worker());
+            } else {
+                Create_vehicle_wrapper(
+                        mav_stream,
+                        system_id,
+                        component_id
+                        );
+            }
         }
     }
 }
@@ -336,7 +355,7 @@ Mavlink_vehicle_manager::Schedule_next_read(Mavlink_vehicle::Mavlink_stream::Ptr
         size_t to_read = mav_stream->Get_decoder().Get_next_read_size();
         size_t max_read;
         if (stream->Get_type() == Io_stream::Type::UDP) {
-            max_read = ugcs::vsm::mavlink::MAX_MAVLINK_PACKET_SIZE;
+            max_read = ugcs::vsm::MIN_UDP_PAYLOAD_SIZE_TO_READ;
         } else {
             max_read = to_read;
         }
@@ -438,6 +457,7 @@ Mavlink_vehicle_manager::Handle_new_connection(
         int baud,
         ugcs::vsm::Socket_address::Ptr peer_addr,
         ugcs::vsm::Io_stream::Ref stream,
+        ugcs::vsm::mavlink::MAV_AUTOPILOT autopilot_type,
         bool detect_frame,
         ugcs::vsm::Optional<std::string> custom_model_name,
         ugcs::vsm::Optional<std::string> custom_serial_number)
@@ -468,7 +488,8 @@ Mavlink_vehicle_manager::Handle_new_connection(
                     detect_frame,
                     peer_addr,
                     custom_model_name,
-                    custom_serial_number
+                    custom_serial_number,
+                    autopilot_type
                     ));
 
     mav_stream->Get_decoder().Register_raw_data_handler(
@@ -476,6 +497,28 @@ Mavlink_vehicle_manager::Handle_new_connection(
                     &Mavlink_vehicle_manager::On_raw_data,
                     Shared_from_this(),
                     mav_stream));
+
+    // Workaround for case when vehicle is connected via UDP via esp-link device.
+    // It sends telemetry to broadcast address by default and starts unicasting only
+    // if there is traffic from GS. Let's send valid HB message to trigger the
+    // unicasting and then proceed as usual. (Vehicle is sending HB to vehicle after detection already).
+    // TODO: Remove this once I learn how to receive broadcasts on connected UDP socket.
+    if (stream->Get_type() == Io_stream::Type::UDP) {
+        mavlink::Pld_heartbeat hb;
+        hb->custom_mode = 0;
+        hb->type = mavlink::MAV_TYPE::MAV_TYPE_GCS;
+        hb->autopilot = mavlink::MAV_AUTOPILOT::MAV_AUTOPILOT_INVALID;
+        hb->base_mode = mavlink::MAV_MODE::MAV_MODE_PREFLIGHT;
+        hb->system_status = mavlink::MAV_STATE::MAV_STATE_UNINIT;
+        mav_stream->Send_message(
+            hb,
+            Mavlink_vehicle::VSM_SYSTEM_ID,
+            Mavlink_vehicle::VSM_COMPONENT_ID,
+            Mavlink_vehicle::WRITE_TIMEOUT,
+            Make_timeout_callback(
+                &Mavlink_vehicle_manager::Write_to_vehicle_timed_out, this, mav_stream),
+                Get_worker());
+    }
 
     Schedule_next_read(mav_stream);
 }
