@@ -202,62 +202,6 @@ Mavlink_vehicle::Update_boot_time(std::chrono::milliseconds boot_duration)
     }
 }
 
-const std::string
-Mavlink_vehicle::Mav_result_to_string(int r)
-{
-    switch (static_cast<mavlink::MAV_RESULT>(r)) {
-    case mavlink::MAV_RESULT_ACCEPTED:
-        return "Success";
-    case mavlink::MAV_RESULT_DENIED:
-        return "Command denied";
-    case mavlink::MAV_RESULT_FAILED:
-        return "Command failed";
-    case mavlink::MAV_RESULT_UNSUPPORTED:
-        return "Command unsupported";
-    case mavlink::MAV_RESULT_TEMPORARILY_REJECTED:
-        return "Command temporarily rejected";
-    }
-    return "UNDEFINED";
-}
-
-const std::string
-Mavlink_vehicle::Mav_mission_result_to_string(int r)
-{
-    switch (static_cast<mavlink::MAV_MISSION_RESULT>(r)) {
-    case mavlink::MAV_MISSION_ACCEPTED:
-        return "Success";
-    case mavlink::MAV_MISSION_DENIED:
-        return "Route denied";
-    case mavlink::MAV_MISSION_ERROR:
-        return "Route error";
-    case mavlink::MAV_MISSION_INVALID:
-        return "Route invalid";
-    case mavlink::MAV_MISSION_INVALID_PARAM1:
-        return "Invalid param1";
-    case mavlink::MAV_MISSION_INVALID_PARAM2:
-        return "Invalid param2";
-    case mavlink::MAV_MISSION_INVALID_PARAM3:
-        return "Invalid param3";
-    case mavlink::MAV_MISSION_INVALID_PARAM4:
-        return "Invalid param4";
-    case mavlink::MAV_MISSION_INVALID_PARAM5_X:
-        return "Invalid param5";
-    case mavlink::MAV_MISSION_INVALID_PARAM6_Y:
-        return "Invalid param6";
-    case mavlink::MAV_MISSION_INVALID_PARAM7:
-        return "Invalid param7";
-    case mavlink::MAV_MISSION_INVALID_SEQUENCE:
-        return "Invalid sequence";
-    case mavlink::MAV_MISSION_NO_SPACE:
-        return "Route too big";
-    case mavlink::MAV_MISSION_UNSUPPORTED:
-        return "Route unsupported";
-    case mavlink::MAV_MISSION_UNSUPPORTED_FRAME:
-        return "Invalid frame";
-    }
-    return "UNDEFINED";
-}
-
 void
 Mavlink_vehicle::Activity::Disable()
 {
@@ -702,14 +646,32 @@ Mavlink_vehicle::Do_command_long::On_command_ack(
             attempts_left = ATTEMPTS;
             Try();
         } else {
-            auto p = message->payload->result.Get();
-            Call_next_action(false, "Result: " + std::to_string(p) + " (" + Mav_result_to_string(p).c_str() + ")");
+            Call_next_action(false, "Result: " + Mavresult_to_string(message->payload->result));
             // command failed. return failure to ucs.
             commands.clear();
             Disable();
         }
     } else {
         VEHICLE_LOG_ERR(vehicle, "Unexpected command acked. Expected: %s", cmd.Get_name());
+    }
+}
+
+const std::string
+Mavlink_vehicle::Do_command_long::Mavresult_to_string(int r)
+{
+    switch (static_cast<mavlink::MAV_RESULT>(r)) {
+    case mavlink::MAV_RESULT_ACCEPTED:
+        return "Success";
+    case mavlink::MAV_RESULT_DENIED:
+        return "Command denied";
+    case mavlink::MAV_RESULT_FAILED:
+        return "Command failed";
+    case mavlink::MAV_RESULT_UNSUPPORTED:
+        return "Command unsupported";
+    case mavlink::MAV_RESULT_TEMPORARILY_REJECTED:
+        return "Command temporarily rejected";
+    default:
+        return "UDEFINED";
     }
 }
 
@@ -1332,18 +1294,15 @@ Mavlink_vehicle::Mission_upload::On_mission_ack(
         /* Not for us, ignore. */
         return;
     }
-    if (message->payload->type == mavlink::MAV_MISSION_RESULT::MAV_MISSION_ACCEPTED) {
+    switch (message->payload->type) {
+    case mavlink::MAV_MISSION_RESULT::MAV_MISSION_ACCEPTED:
         Call_next_action(true);
-    } else {
-        auto p = message->payload->type.Get();
-        Call_next_action(
-                false,
-                std::string("Result: ")
-                + std::to_string(p)
-                + " ("
-                + Mav_mission_result_to_string(p)
-                + ")");
-        Disable();
+        break;
+    case mavlink::MAV_MISSION_RESULT::MAV_MISSION_NO_SPACE:
+        Call_next_action(false, "Route too big");
+        break;
+    default:
+        Call_next_action(false, std::string("Mission ack failed, result=") + std::to_string(message->payload->type));
     }
 }
 

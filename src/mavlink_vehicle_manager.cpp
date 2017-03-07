@@ -250,14 +250,6 @@ Mavlink_vehicle_manager::On_heartbeat(
     if (message->payload->type == mavlink::MAV_TYPE_GCS) {
         return;
     }
-
-    // Ignore uninitialized vehicle.
-    if (    message->payload->system_status == mavlink::MAV_STATE_UNINIT
-        ||  message->payload->system_status == mavlink::MAV_STATE_BOOT
-        ||  message->payload->system_status == mavlink::MAV_STATE_POWEROFF) {
-        return;
-    }
-
     std::string serial_number;
     std::string model_name;
     auto system_id = message->Get_sender_system_id();

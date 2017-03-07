@@ -161,12 +161,6 @@ protected:
             const ugcs::vsm::Operation_waiter::Ptr&,
             Mavlink_stream::Weak_ptr);
 
-    static const std::string
-    Mav_result_to_string(int);
-
-    static const std::string
-    Mav_mission_result_to_string(int);
-
     /** Real system id of the vehicle, i.e. the physical vehicle which is
      * available through the Mavlink stream. It has nothing to do with
      * the system id visible to UCS server.
@@ -596,6 +590,9 @@ protected:
         /** Schedule retry timer. */
         void
         Schedule_timer();
+
+        static const std::string
+        Mavresult_to_string(int);
 
         /** Retry timer. */
         ugcs::vsm::Timer_processor::Timer::Ptr timer;
