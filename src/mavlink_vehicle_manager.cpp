@@ -1,4 +1,4 @@
-// Copyright (c) 2014, Smart Projects Holdings Ltd
+// Copyright (c) 2017, Smart Projects Holdings Ltd
 // All rights reserved.
 // See LICENSE file for license details.
 
@@ -8,12 +8,10 @@ using namespace ugcs::vsm;
 
 Mavlink_vehicle_manager::Mavlink_vehicle_manager(
         const std::string default_model_name,
-        const std::string config_prefix,
-        const mavlink::Extension& extension) :
+        const std::string config_prefix) :
     Request_processor("Mavlink vehicle manager processor"),
     default_model_name(default_model_name),
-    config_prefix(config_prefix),
-    extension(extension)
+    config_prefix(config_prefix)
 {
 }
 
@@ -81,10 +79,6 @@ Mavlink_vehicle_manager::Load_vehicle_config()
     for (auto it = props->begin(config_prefix); it != props->end(); it++) {
         auto token_index = 2;
         try {
-            if (it[token_index] == "serial_port") {
-                continue;   /* this is handled by detector->Add_detector() call */
-            }
-
             if (it[token_index] == "custom") {
                 /* Custom vehicle defined, lets look for its system id,
                  * model name and serial number, too. */
@@ -143,14 +137,9 @@ Mavlink_vehicle_manager::On_param_value(
         if (det_iter != detectors.end() && message->payload->param_value == 2.0) {
             det_iter->second.frame_type =
                     static_cast<mavlink::MAV_TYPE>(mavlink::ugcs::MAV_TYPE::MAV_TYPE_IRIS);
+            // It will create vehicle on first healthy HB.
+            det_iter->second.frame_detection_retries = 0;
         }
-        auto system_id = message->Get_sender_system_id();
-        auto component_id = message->Get_sender_component_id();
-        Create_vehicle_wrapper(
-                mav_stream,
-                system_id,
-                component_id
-                );
     }
 }
 
@@ -250,6 +239,14 @@ Mavlink_vehicle_manager::On_heartbeat(
     if (message->payload->type == mavlink::MAV_TYPE_GCS) {
         return;
     }
+
+    // Ignore uninitialized vehicle.
+    if (    message->payload->system_status == mavlink::MAV_STATE_UNINIT
+        ||  message->payload->system_status == mavlink::MAV_STATE_BOOT
+        ||  message->payload->system_status == mavlink::MAV_STATE_POWEROFF) {
+        return;
+    }
+
     std::string serial_number;
     std::string model_name;
     auto system_id = message->Get_sender_system_id();
@@ -267,7 +264,10 @@ Mavlink_vehicle_manager::On_heartbeat(
             /* Signal transport_detector that this is not our protocol. */
             Transport_detector::Get_instance()->Protocol_not_detected(stream);
         } else {
-            det_iter->second.frame_type = static_cast<mavlink::MAV_TYPE>(message->payload->type.Get());
+            // Set frame only if it is not set already (by iris frame detector)
+            if (det_iter->second.frame_type == ugcs::vsm::mavlink::MAV_TYPE_GENERIC) {
+                det_iter->second.frame_type = static_cast<mavlink::MAV_TYPE>(message->payload->type.Get());
+            }
             if (det_iter->second.frame_detection_retries) {
                 // Try frame detection only once.
                 det_iter->second.frame_detection_retries--;
@@ -454,7 +454,7 @@ Mavlink_vehicle_manager::Handle_new_connection(
         ugcs::vsm::Optional<std::string> custom_model_name,
         ugcs::vsm::Optional<std::string> custom_serial_number)
 {
-    auto mav_stream = Mavlink_vehicle::Mavlink_stream::Create(stream, extension);
+    auto mav_stream = Mavlink_vehicle::Mavlink_stream::Create(stream);
     mav_stream->Bind_decoder_demuxer();
 
     LOG_INFO("New connection [%s:%d].", name.c_str(), baud);

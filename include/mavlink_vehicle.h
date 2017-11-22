@@ -1,4 +1,4 @@
-// Copyright (c) 2014, Smart Projects Holdings Ltd
+// Copyright (c) 2017, Smart Projects Holdings Ltd
 // All rights reserved.
 // See LICENSE file for license details.
 
@@ -45,10 +45,11 @@ public:
                 real_system_id(system_id),
                 real_component_id(component_id),
                 mission_dump_path(mission_dump_path),
-                mav_stream(Mavlink_stream::Create(stream, ugcs::vsm::mavlink::apm::Extension::Get())),
+                mav_stream(Mavlink_stream::Create(stream)),
             heartbeat(*this),
             statistics(*this),
             read_parameters(*this),
+            read_string_parameters(*this),
             read_version(*this),
             do_commands(*this),
             write_parameters(*this),
@@ -56,8 +57,17 @@ public:
             telemetry(*this),
             mission_upload(*this)
     {
-        ASSERT(real_system_id != ugcs::vsm::Mavlink_demuxer::SYSTEM_ID_ANY);
         port_name = stream->Get_name();
+
+        t_servo_pwm_1 = Add_telemetry(subsystems.fc, "servo_pwm_1", ugcs::vsm::proto::FIELD_SEMANTIC_NUMERIC);
+        t_servo_pwm_2 = Add_telemetry(subsystems.fc, "servo_pwm_2", ugcs::vsm::proto::FIELD_SEMANTIC_NUMERIC);
+        t_servo_pwm_3 = Add_telemetry(subsystems.fc, "servo_pwm_3", ugcs::vsm::proto::FIELD_SEMANTIC_NUMERIC);
+        t_servo_pwm_4 = Add_telemetry(subsystems.fc, "servo_pwm_4", ugcs::vsm::proto::FIELD_SEMANTIC_NUMERIC);
+        t_servo_pwm_5 = Add_telemetry(subsystems.fc, "servo_pwm_5", ugcs::vsm::proto::FIELD_SEMANTIC_NUMERIC);
+        t_servo_pwm_6 = Add_telemetry(subsystems.fc, "servo_pwm_6", ugcs::vsm::proto::FIELD_SEMANTIC_NUMERIC);
+        t_servo_pwm_7 = Add_telemetry(subsystems.fc, "servo_pwm_7", ugcs::vsm::proto::FIELD_SEMANTIC_NUMERIC);
+        t_servo_pwm_8 = Add_telemetry(subsystems.fc, "servo_pwm_8", ugcs::vsm::proto::FIELD_SEMANTIC_NUMERIC);
+
     }
 
     /** System ID of a VSM itself. Thats is the value seen by vehicle. Value
@@ -70,10 +80,24 @@ public:
 
     /** Write operations timeout. */
     constexpr static std::chrono::seconds
-    WRITE_TIMEOUT = std::chrono::seconds(60);
+    WRITE_TIMEOUT = std::chrono::seconds(180);
 
     bool
     Is_mission_upload_active();
+
+    void
+    Send_message(ugcs::vsm::mavlink::Payload_base& payload);
+
+    /** Custom telemetry for mavlink vehicles*/
+    ugcs::vsm::Property::Ptr t_servo_pwm_1 = nullptr;
+    ugcs::vsm::Property::Ptr t_servo_pwm_2 = nullptr;
+    ugcs::vsm::Property::Ptr t_servo_pwm_3 = nullptr;
+    ugcs::vsm::Property::Ptr t_servo_pwm_4 = nullptr;
+    ugcs::vsm::Property::Ptr t_servo_pwm_5 = nullptr;
+    ugcs::vsm::Property::Ptr t_servo_pwm_6 = nullptr;
+    ugcs::vsm::Property::Ptr t_servo_pwm_7 = nullptr;
+    ugcs::vsm::Property::Ptr t_servo_pwm_8 = nullptr;
+
 
 protected:
 
@@ -90,6 +114,17 @@ protected:
 
     // Allow vsm to report relative altitude. Used for ardupilot 3.3.1+ to report only amsl altitudes.
     bool report_relative_altitude = true;
+
+    int current_sensor_health = 0;
+    int current_sensor_enabled = 0;
+    int current_sensors_present = 0;
+
+    int current_autopilot_status = -1;
+
+    // Return names of currenly failed sensors.
+    // Return empty string if all sensors are healthy.
+    std::string
+    Get_failed_sensor_report();
 
     /** Uses the above variables to detect recent boot and
      * reset altitude origin.
@@ -110,18 +145,9 @@ protected:
     virtual void
     On_disable() override;
 
-    /** Enable handler in vehicle context. */
-    void
-    On_enable_vehicle(ugcs::vsm::Request::Ptr);
-
-    /** Disable handler in vehicle context. */
-    void
-    On_disable_vehicle(ugcs::vsm::Request::Ptr);
-
     /** Reset state machine to initial state and start vehicle waiting. */
     void
     Wait_for_vehicle();
-
 
     /** Get the type of Mavlink vehicle. */
     ugcs::vsm::mavlink::MAV_TYPE
@@ -144,8 +170,10 @@ protected:
     Process_heartbeat(
             ugcs::vsm::mavlink::Message<ugcs::vsm::mavlink::MESSAGE_ID::HEARTBEAT>::Ptr);
 
-    void
-    Send_message(ugcs::vsm::mavlink::Payload_base& payload);
+    /** Vehicle specific telemetry initialization.
+     * Default initializer can be used if vehicle has the same telemetry schema as ardupilot 3.3 */
+    virtual void
+    Initialize_telemetry();
 
     void
     Set_message_interval(ugcs::vsm::mavlink::MESSAGE_ID_TYPE id, int interval);
@@ -160,6 +188,31 @@ protected:
     Write_to_vehicle_timed_out(
             const ugcs::vsm::Operation_waiter::Ptr&,
             Mavlink_stream::Weak_ptr);
+
+    static const std::string
+    Mav_result_to_string(int);
+
+    static const std::string
+    Mav_mission_result_to_string(int);
+
+    /** Vehicle can override it to support setting parameters from config file on connect.
+     * Perform name and value range checking before setting parameter on the vehicle.
+     * @param name Name of parameter as defined by the autopilot.
+     * @param value parameter value. Float or integer.
+     * @param type [OUT] Type of the parameter to set when sending PARAM_SET.
+     *
+     * @return @a true if parameter is ok to be set, otherwise @a false.
+     *
+     */
+    virtual bool
+    Verify_parameter(const std::string& name, float value, ugcs::vsm::mavlink::MAV_PARAM_TYPE& type);
+
+    /** Read mavlink parameters from properties and set them on the vehicle connect.
+     * Calls Verify_parameter on each parameter before sending it to vehicle.
+     * @param prefix parameter name prefix. E.g. "vehicle.parameters"
+     */
+    void
+    Set_parameters_from_properties(const std::string& prefix);
 
     /** Real system id of the vehicle, i.e. the physical vehicle which is
      * available through the Mavlink stream. It has nothing to do with
@@ -184,8 +237,24 @@ protected:
 
     uint8_t base_mode = 0;
 
+    /** Telemetry rate in hertz. Multiple messages are sent from APM at
+     * every telemetry period.
+     * Default is 2 messages per second.
+     */
+    static constexpr float DEFAULT_TELEMETRY_RATE = 2.0;
+
+    uint8_t telemetry_rate_hz = DEFAULT_TELEMETRY_RATE;
+
+    /** Number of telemetry message types we are expecting to receive per second. */
+    float expected_telemetry_rate = 0;
+
+    ugcs::vsm::Vehicle::Command_map current_command_map;
+
     bool
     Is_armed() {return (base_mode & ugcs::vsm::mavlink::MAV_MODE_FLAG::MAV_MODE_FLAG_SAFETY_ARMED);};
+
+    uint32_t
+    Get_mission_item_hash(ugcs::vsm::mavlink::Pld_mission_item& msg);
 
     /** Represents an activity ongoing with a vehicle. This is mostly a
      * convenience class to separate activity-related methods and members.
@@ -204,12 +273,14 @@ protected:
         /** Convenience builder for next action callback. Failure by default. */
         DEFINE_CALLBACK_BUILDER(Make_next_action, (bool, std::string), (false, std::string()));
 
-        enum {
-            ATTEMPTS = 3,
-            RETRY_TIMEOUT = 1,
-        };
+        const int try_count;
+        const std::chrono::milliseconds retry_timeout;
+        const std::chrono::milliseconds extended_retry_timeout;
 
         Activity(Mavlink_vehicle& vehicle) :
+            try_count(vehicle.command_try_count),
+            retry_timeout(vehicle.command_timeout),
+            extended_retry_timeout(vehicle.command_timeout * 3),
             vehicle(vehicle)
         {
             /* Vehicle known about all its activities. */
@@ -234,7 +305,7 @@ protected:
         /** Call next action, if any. Activity is disabled before calling
          * next action handler. */
         void
-        Call_next_action(bool success, const std::string& msg);
+        Call_next_action(bool success, const std::string& msg = std::string());
 
         /**
          * Helper for registration of vehicle Mavlink message handlers. System
@@ -265,21 +336,8 @@ protected:
                                 pthis, std::forward<Args>(args)...),
                                 system_id ? *system_id : vehicle.real_system_id,
                                 component_id);
-            registered_handlers.insert(key);
+            registered_handlers.push_back(key);
             return key;
-        }
-
-        /**
-         * Helper for unregistration of vehicle Mavlink message handlers. System
-         * id is taken from the vehicle.
-         * @param msg_id Mavlink message id for unregistration.
-         * @param component_id Component id for unregistration.
-         */
-        void
-        Unregister_mavlink_handler(ugcs::vsm::Mavlink_demuxer::Key& key)
-        {
-            registered_handlers.erase(key);
-            vehicle.mav_stream->Get_demuxer().Unregister_handler(key);
         }
 
         /** Unregister all currently registered Mavlink message handlers. */
@@ -287,8 +345,7 @@ protected:
         Unregister_mavlink_handlers()
         {
             for(auto& key: registered_handlers) {
-                auto copy = key;
-                vehicle.mav_stream->Get_demuxer().Unregister_handler(copy);
+                vehicle.mav_stream->Get_demuxer().Unregister_handler(key);
             }
             registered_handlers.clear();
         }
@@ -351,9 +408,8 @@ protected:
         Mavlink_vehicle& vehicle;
 
     private:
-
         /** Handlers registered in demuxer. */
-        std::unordered_set<ugcs::vsm::Mavlink_demuxer::Key, ugcs::vsm::Mavlink_demuxer::Key::Hasher>
+        std::vector<ugcs::vsm::Mavlink_demuxer::Key>
             registered_handlers;
 
         /** Next action to execute. */
@@ -442,9 +498,9 @@ protected:
         ugcs::vsm::Timer_processor::Timer::Ptr timer;
 
         uint64_t num_of_processed_messages = 0;
+        uint64_t num_of_csum_errors = 0;
     } statistics;
 
-    /** Data related to initial reading of parameters. */
     class Read_parameters: public Activity {
     public:
 
@@ -475,6 +531,10 @@ protected:
         /** Try next parameters read attempt. */
         bool
         Try();
+
+        /** true if activity is currently active */
+        bool
+        Is_enabled();
 
         /** Schedule retry timer. */
         void
@@ -511,11 +571,70 @@ protected:
         std::unordered_set<std::string> param_names;
     } read_parameters;
 
+    class Read_string_parameters: public Activity {
+    public:
+
+        using Activity::Activity;
+
+        /** Handler for status text. */
+        typedef ugcs::vsm::Callback_proxy<
+                void,
+                ugcs::vsm::mavlink::sph::Pld_param_str_value>
+            Parameter_handler;
+
+        /** Convenience builder. */
+        DEFINE_CALLBACK_BUILDER(
+                Make_parameter_handler,
+                (ugcs::vsm::mavlink::sph::Pld_param_str_value),
+                (ugcs::vsm::mavlink::sph::Pld_param_str_value()));
+
+        /** Start parameters reading.
+         * @param names set of parameter names to retrieve.
+         * If names not given - read all parameters. */
+        void
+        Enable(std::unordered_set<std::string> names);
+
+        /** Stop parameters reading. */
+        virtual void
+        On_disable() override;
+
+        /** Try next parameters read attempt. */
+        bool
+        Try();
+
+        /** Schedule retry timer. */
+        void
+        Schedule_timer();
+
+        /** Parameter received. */
+        void
+        On_param_value(ugcs::vsm::mavlink::Message<
+                ugcs::vsm::mavlink::sph::MESSAGE_ID::PARAM_STR_VALUE,
+                ugcs::vsm::mavlink::sph::Extension>::Ptr);
+
+        /** Retry timer. */
+        ugcs::vsm::Timer_processor::Timer::Ptr timer;
+
+        /** Number of read attempts left. */
+        size_t attempts_left;
+
+        /** Optional handler. Called on  each retrieved parameter. */
+        Parameter_handler parameter_handler;
+
+        std::unordered_set<std::string> param_names;
+    } read_string_parameters;
+
     /** Data related to initial reading of parameters. */
     class Read_version: public Activity {
     public:
 
         using Activity::Activity;
+
+        enum {
+            // Give 1 minute to detect autopilot version.
+            ATTEMPTS = 20,
+            RETRY_TIMEOUT = 3,
+        };
 
         /** Handler for status text. */
         typedef ugcs::vsm::Callback_proxy<
@@ -590,9 +709,6 @@ protected:
         /** Schedule retry timer. */
         void
         Schedule_timer();
-
-        static const std::string
-        Mavresult_to_string(int);
 
         /** Retry timer. */
         ugcs::vsm::Timer_processor::Timer::Ptr timer;
@@ -679,21 +795,38 @@ protected:
         On_count(ugcs::vsm::mavlink::Message<ugcs::vsm::mavlink::MESSAGE_ID::MISSION_COUNT>::Ptr);
 
         void
+        On_mission_ack(ugcs::vsm::mavlink::Message<ugcs::vsm::mavlink::MESSAGE_ID::MISSION_ACK>::Ptr);
+
+        void
         On_item(ugcs::vsm::mavlink::Message<ugcs::vsm::mavlink::MESSAGE_ID::MISSION_ITEM>::Ptr);
 
-        /** Read next waypoint. */
-        void
-        Read_next();
+        /** Read waypoint count. */
+        bool
+        Get_count();
 
-        ugcs::vsm::Mavlink_demuxer::Key mission_count_handler;
+        /** Read next waypoint. */
+        bool
+        Get_next_item();
+
+        bool
+        In_progress();
+
+        void
+        Cancel_timer();
 
         /** Number of waypoints remnainign to be read. */
-        size_t waypoints_total;
+        size_t items_total;
 
         /** Current waypoint sequence number to read. */
-        size_t waypoint_to_read;
+        size_t item_to_read;
 
         Mission_item_handler item_handler;
+
+        int retries = 0;
+
+        /** Retry timer. */
+        ugcs::vsm::Timer_processor::Timer::Ptr timer;
+
     } read_waypoints;
 
     class Telemetry: public Activity {
@@ -703,14 +836,9 @@ protected:
         /** Telemetry configuration parameters. */
         class Config {
         public:
-            /** Telemetry rate in hertz. Multiple messages are sent from APM at
-             * every telemetry period.
-             */
-            uint8_t TELEMETRY_RATE_HZ = 2;
-
             /** Telemetry is requested again if it was absent during this
              * amount of time. Should be considerably less frequent than
-             * TELEMETRY_RATE_HZ.
+             * telemetry_rate_hz.
              */
             std::chrono::seconds WATCHDOG_INTERVAL = std::chrono::seconds(5);
 
@@ -721,12 +849,12 @@ protected:
         } config;
 
         /** Defines how many times slower the link quality estimation should
-         * be compared to Config::TELEMETRY_RATE_HZ.
+         * be compared to telemetry_rate_hz.
          */
         static constexpr int ESTIMATION_RATE_MULTIPLIER = 4;
 
         /** Defines how many timer slower the heartbeat request should be
-         * compared to Config::TELEMETRY_RATE_HZ.
+         * compared to telemetry_rate_hz.
          */
         static constexpr int HEARTBEAT_RATE_MULTIPLIER = 2;
 
@@ -746,7 +874,6 @@ protected:
         void
         Register_telemetry_handler(Args&& ...args)
         {
-            telemetry_message_types++;
             Register_mavlink_handler<msg_id>(std::forward<Args>(args)...);
         }
 
@@ -790,10 +917,10 @@ protected:
         On_gps_raw(ugcs::vsm::mavlink::Message<ugcs::vsm::mavlink::MESSAGE_ID::GPS_RAW_INT>::Ptr);
 
         void
-        On_raw_imu(ugcs::vsm::mavlink::Message<ugcs::vsm::mavlink::MESSAGE_ID::RAW_IMU>::Ptr);
+        On_mission_current(ugcs::vsm::mavlink::Message<ugcs::vsm::mavlink::MESSAGE_ID::MISSION_CURRENT>::Ptr);
 
         void
-        On_scaled_pressure(ugcs::vsm::mavlink::Message<ugcs::vsm::mavlink::MESSAGE_ID::SCALED_PRESSURE>::Ptr);
+        On_target_position(ugcs::vsm::mavlink::Message<ugcs::vsm::mavlink::MESSAGE_ID::POSITION_TARGET_GLOBAL_INT>::Ptr);
 
         void
         On_radio(ugcs::vsm::mavlink::Message<ugcs::vsm::mavlink::apm::MESSAGE_ID::RADIO,
@@ -801,6 +928,9 @@ protected:
 
         void
         On_altitude(ugcs::vsm::mavlink::Message<ugcs::vsm::mavlink::MESSAGE_ID::ALTITUDE>::Ptr);
+
+        void
+        On_servo_output_raw(ugcs::vsm::mavlink::Message<ugcs::vsm::mavlink::MESSAGE_ID::SERVO_OUTPUT_RAW>::Ptr);
 
         /** Watchdog timer for telemetry receiving from vehicle. */
         ugcs::vsm::Timer_processor::Timer::Ptr watchdog_timer;
@@ -810,10 +940,6 @@ protected:
 
         /** Link quality estimation timer. */
         ugcs::vsm::Timer_processor::Timer::Ptr estimation_timer;
-
-        /** Number of telemetry message types we are expecting to receive
-         * with Config::TELEMETRY_RATE_HZ frequency. */
-        size_t telemetry_message_types = 0;
 
         /** Indicate the presence of any telemetry message during last telemetry
          * check interval. If false, telemetry is requested again.
@@ -833,7 +959,7 @@ protected:
         unsigned rx_errors_accum = 0;
 
         /** End-result of estimated link quality. */
-        double link_quality = 0;
+        double link_quality = 0.5;
 
         /** Previous number of rx errors reported by 3DR RADIO message.
          * Used to control the difference and wrap-around. -1 means no previous
@@ -853,15 +979,6 @@ protected:
     class Mission_upload: public Activity {
     public:
         using Activity::Activity;
-
-        enum {
-            /** In seconds. */
-            RETRY_TIMEOUT = 1,
-            /** Number of attempts for single action. */
-            ATTEMPTS_ACTION = 3,
-            /** Number of attempts for the whole task. */
-            ATTEMPTS_TOTAL = 30,
-        };
 
         /** return true if mission upload is active. */
         bool
@@ -889,7 +1006,7 @@ protected:
 
         /** Schedule timer for retry attempt. */
         void
-        Schedule_timer();
+        Schedule_timer(std::chrono::milliseconds timeout);
 
         /** Try next attempt and decrement remaining attempts counters.
          * @return @a true if attempts left, otherwise @a false.
@@ -914,16 +1031,45 @@ protected:
         /** Number of attempts left for current action. */
         size_t attempts_action_left;
 
-        /** Number of attempts left for the whole task. */
-        size_t attempts_total_left;
-
         /** true when handler for the final ack is registered. */
         bool final_ack_waiting = false;
 
         /** Retry timer. */
         ugcs::vsm::Timer_processor::Timer::Ptr timer;
-
     } mission_upload;
+
+    class Mavlink_route
+    {
+    public:
+        void
+        Reset();
+
+        void
+        Add_item(const ugcs::vsm::mavlink::Pld_mission_item&);
+
+        const ugcs::vsm::mavlink::Pld_mission_item*
+        Get_item_ref(int idx);
+
+        int
+        Get_item_count();
+
+    private:
+        std::unordered_map<int, ugcs::vsm::mavlink::Pld_mission_item> items;
+    };
+
+    // Return true vehicle is navigating waypoints and current command is cmd.
+    bool
+    Is_current_command(int cmd);
+
+    // Return true if there is a valid mission and current command is the last one in the mission.
+    bool
+    Is_current_command_last();
+
+    // Last uploaded/downloaded route items.
+    Mavlink_route current_route;
+
+    // Keep current sequence number reported via MISSION_CURRENT.
+    int current_mission_item_index = -1;
 
     /* Somewhat ugly friendship is needed to enable activities from derived
      * classes to access activities from base class.

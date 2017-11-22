@@ -1,4 +1,4 @@
-// Copyright (c) 2014, Smart Projects Holdings Ltd
+// Copyright (c) 2017, Smart Projects Holdings Ltd
 // All rights reserved.
 // See LICENSE file for license details.
 
@@ -23,8 +23,7 @@ public:
     /** Constructor. */
     Mavlink_vehicle_manager(
             const std::string default_model_name,
-            const std::string config_prefix,
-            const ugcs::vsm::mavlink::Extension& extension);
+            const std::string config_prefix);
 
 protected:
 
@@ -71,9 +70,6 @@ protected:
     /** Configuration file prefix. */
     std::string config_prefix;
 
-    /** Mavlink extension used for Mavlink stream creation. */
-    const ugcs::vsm::mavlink::Extension& extension;
-
     /** Get vehicle manager worker. */
     ugcs::vsm::Request_worker::Ptr
     Get_worker();
@@ -82,6 +78,23 @@ protected:
      * necessary. */
     virtual void
     On_manager_disable();
+
+    /** Enable the manager. */
+    virtual void
+    On_enable() override;
+
+    /** Disable the manager. */
+    virtual void
+    On_disable() override;
+
+    /** Context of the managed vehicle. */
+    struct Vehicle_ctx {
+        Mavlink_vehicle::Ptr vehicle;
+        ugcs::vsm::Io_stream::Ref stream;
+    };
+
+    /** Managed vehicles. */
+    std::unordered_map<int, Vehicle_ctx> vehicles;
 
 private:
     /** Maximum length of accumulated raw line. */
@@ -120,15 +133,6 @@ private:
     /** Detector tries to detect frame 3 times.
      * If that fails it defaults to whatever is in the HEARTBEAT message.*/
     static const unsigned int FRAME_DETECTION_RETRIES = 3;
-
-    /** Context of the managed vehicle. */
-    struct Vehicle_ctx {
-        Mavlink_vehicle::Ptr vehicle;
-        ugcs::vsm::Io_stream::Ref stream;
-    };
-
-    /** Managed vehicles. */
-    std::unordered_map<int, Vehicle_ctx> vehicles;
 
     /** Preconfigured serial numbers and model names:
      * system id maps to [model name, serial number]. */
@@ -227,14 +231,6 @@ private:
     /** Stream read completion handler. */
     void
     On_stream_read(ugcs::vsm::Io_buffer::Ptr, ugcs::vsm::Io_result, Mavlink_vehicle::Mavlink_stream::Ptr);
-
-    /** Enable the manager. */
-    virtual void
-    On_enable() override;
-
-    /** Disable the manager. */
-    virtual void
-    On_disable() override;
 
     /** Process disable event from the processor context. */
     void
