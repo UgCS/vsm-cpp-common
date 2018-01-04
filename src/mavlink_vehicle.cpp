@@ -34,7 +34,7 @@ static const std::vector<std::string> SENSOR_NAMES = {
     "AHRS",
     "TERRAIN"
 };
-}
+} // namespace
 
 using namespace ugcs::vsm;
 
@@ -57,7 +57,7 @@ Mavlink_vehicle::On_disable()
     mav_stream = nullptr;
 }
 
-ugcs::vsm::mavlink::MAV_TYPE
+mavlink::MAV_TYPE
 Mavlink_vehicle::Get_mav_type() const
 {
     return type;
@@ -112,9 +112,9 @@ Mavlink_vehicle::Schedule_next_read()
     size_t to_read = mav_stream->Get_decoder().Get_next_read_size();
     size_t max_read;
     if (mav_stream->Get_stream()->Get_type() == Io_stream::Type::UDP) {
-        max_read = ugcs::vsm::MIN_UDP_PAYLOAD_SIZE_TO_READ;
+        max_read = MIN_UDP_PAYLOAD_SIZE_TO_READ;
     } else {
-        max_read = to_read;
+        max_read = MAX_TCP_PAYLOAD_SIZE_TO_READ;
     }
     read_op = mav_stream->Get_stream()->Read(max_read, to_read,
             Make_read_callback(&Mavlink_vehicle::On_read_handler,
@@ -132,7 +132,7 @@ Mavlink_vehicle::Disable_activities()
 
 void
 Mavlink_vehicle::Process_heartbeat(
-        ugcs::vsm::mavlink::Message<ugcs::vsm::mavlink::MESSAGE_ID::HEARTBEAT>::Ptr)
+        mavlink::Message<mavlink::MESSAGE_ID::HEARTBEAT>::Ptr)
 {
     t_is_armed->Set_value_na();
     t_control_mode->Set_value_na();
@@ -142,7 +142,52 @@ Mavlink_vehicle::Process_heartbeat(
 }
 
 void
-Mavlink_vehicle::Send_message(mavlink::Payload_base& payload)
+Mavlink_vehicle::Inject_message(
+    mavlink::MESSAGE_ID_TYPE msg,
+    uint8_t sys_id,
+    uint8_t cmp_id,
+    Io_buffer::Ptr buf)
+{
+    auto ctx_lock = Get_processing_ctx()->Get_waiter()->Lock_notify();
+    if (Get_processing_ctx()->Is_enabled()) {
+        Request::Ptr request = Request::Create();
+        auto proc_handler = Make_callback(
+            &Mavlink_vehicle::Handle_inject_message,
+            Shared_from_this(),
+            msg, sys_id, cmp_id, buf,
+            request);
+        request->Set_processing_handler(proc_handler);
+        Get_processing_ctx()->Submit_request_locked(request, std::move(ctx_lock));
+    }
+}
+
+void
+Mavlink_vehicle::Handle_inject_message(
+    mavlink::MESSAGE_ID_TYPE msg,
+    uint8_t sys_id,
+    uint8_t cmp_id,
+    Io_buffer::Ptr buf,
+    Request::Ptr request)
+{
+    switch (msg) {
+    case mavlink::MESSAGE_ID::COMMAND_LONG:
+        Send_message(mavlink::Message<mavlink::MESSAGE_ID::COMMAND_LONG>::Create(sys_id, cmp_id, 0, buf)->payload);
+        break;
+    case mavlink::MESSAGE_ID::COMMAND_INT:
+        Send_message(mavlink::Message<mavlink::MESSAGE_ID::COMMAND_INT>::Create(sys_id, cmp_id, 0, buf)->payload);
+        break;
+    case mavlink::MESSAGE_ID::GPS_INJECT_DATA:
+        Send_message(mavlink::Message<mavlink::MESSAGE_ID::GPS_INJECT_DATA>::Create(sys_id, cmp_id, 0, buf)->payload);
+        break;
+    case mavlink::MESSAGE_ID::GPS_RTCM_DATA:
+        Send_message(mavlink::Message<mavlink::MESSAGE_ID::GPS_RTCM_DATA>::Create(sys_id, cmp_id, 0, buf)->payload);
+        break;
+    }
+    request->Complete();
+}
+
+void
+Mavlink_vehicle::Send_message(const mavlink::Payload_base& payload)
 {
     mav_stream->Send_message(
             payload,
@@ -154,6 +199,38 @@ Mavlink_vehicle::Send_message(mavlink::Payload_base& payload)
                     this,
                     mav_stream),
             Get_completion_ctx());
+}
+
+void
+Mavlink_vehicle::Send_message_v1(const mavlink::Payload_base& payload)
+{
+    mav_stream->Send_message(
+            payload,
+            VSM_SYSTEM_ID,
+            VSM_COMPONENT_ID,
+            Mavlink_vehicle::WRITE_TIMEOUT,
+            Make_timeout_callback(
+                    &Mavlink_vehicle::Write_to_vehicle_timed_out,
+                    this,
+                    mav_stream),
+            Get_completion_ctx(),
+            false);
+}
+
+void
+Mavlink_vehicle::Send_message_v2(const mavlink::Payload_base& payload)
+{
+    mav_stream->Send_message(
+            payload,
+            VSM_SYSTEM_ID,
+            VSM_COMPONENT_ID,
+            Mavlink_vehicle::WRITE_TIMEOUT,
+            Make_timeout_callback(
+                    &Mavlink_vehicle::Write_to_vehicle_timed_out,
+                    this,
+                    mav_stream),
+            Get_completion_ctx(),
+            true);
 }
 
 void
@@ -241,6 +318,8 @@ Mavlink_vehicle::Mav_result_to_string(int r)
         return "Command unsupported";
     case mavlink::MAV_RESULT_TEMPORARILY_REJECTED:
         return "Command temporarily rejected";
+    case mavlink::MAV_RESULT_IN_PROGRESS:
+        return "Command in progress";
     }
     return "UNDEFINED";
 }
@@ -284,7 +363,7 @@ Mavlink_vehicle::Mav_mission_result_to_string(int r)
 }
 
 bool
-Mavlink_vehicle::Verify_parameter(const std::string&, float, ugcs::vsm::mavlink::MAV_PARAM_TYPE&)
+Mavlink_vehicle::Verify_parameter(const std::string&, float, mavlink::MAV_PARAM_TYPE&)
 {
     return false;
 }
@@ -292,7 +371,7 @@ Mavlink_vehicle::Verify_parameter(const std::string&, float, ugcs::vsm::mavlink:
 void
 Mavlink_vehicle::Set_parameters_from_properties(const std::string& prefix)
 {
-    auto pr = ugcs::vsm::Properties::Get_instance();
+    auto pr = Properties::Get_instance();
     Write_parameters::List param_list;
     for (auto prop = pr->begin(prefix); prop != pr->end(); prop++) {
         try {
@@ -375,6 +454,9 @@ void
 Mavlink_vehicle::Heartbeat::On_heartbeat(
         mavlink::Message<mavlink::MESSAGE_ID::HEARTBEAT>::Ptr message)
 {
+    // skip wrong heartbeat
+    if (message->payload->autopilot.Get() == 0 && message->payload->type == 0) {return;}
+
     received_count++;
 
     // Ignore heartbeats of type GCS. Sent by Ardupilot 3.3.1 SITL.
@@ -418,7 +500,7 @@ Mavlink_vehicle::Heartbeat::On_heartbeat(
         VEHICLE_LOG_INF(vehicle, "First heartbeat received.");
         vehicle.telemetry.Enable();
         /* Don't read waypoints. It is for debug only. */
-        //vehicle.read_waypoints.Enable();
+        // vehicle.read_waypoints.Enable();
     }
 }
 
@@ -469,12 +551,12 @@ bool
 Mavlink_vehicle::Statistics::On_timer()
 {
     auto& stats = vehicle.mav_stream->Get_decoder().Get_stats();
-    VEHICLE_LOG_DBG(vehicle, "%lld Mavlink messages processed, link quality %.1f%%",
-        static_cast<long long>(stats.handled - num_of_processed_messages),
+    VEHICLE_LOG_DBG(vehicle, "%ld Mavlink messages processed, link quality %.1f%%",
+        static_cast<int64_t>(stats.handled - num_of_processed_messages),
         vehicle.telemetry.link_quality * 100);
     if (stats.bad_checksum != num_of_csum_errors) {
-        VEHICLE_LOG_DBG(vehicle, "%lld Mavlink csum errors",
-            static_cast<long long>(stats.bad_checksum - num_of_csum_errors));
+        VEHICLE_LOG_DBG(vehicle, "%ld Mavlink csum errors",
+            static_cast<int64_t>(stats.bad_checksum - num_of_csum_errors));
         num_of_csum_errors = stats.bad_checksum;
     }
     num_of_processed_messages = stats.handled;
@@ -488,7 +570,7 @@ Mavlink_vehicle::Statistics::On_status_text(
     VEHICLE_LOG_INF(vehicle, "STATUS_TEXT: %s", message->payload->text.Get_string().c_str());
     vehicle.Add_status_message(message->payload->text.Get_string());
     vehicle.Commit_to_ucs();
-    if(statustext_handler) {
+    if (statustext_handler) {
         statustext_handler(message);
     }
 }
@@ -525,12 +607,9 @@ Mavlink_vehicle::Read_parameters::Try()
 {
     if (!attempts_left--) {
         Disable();
-        return false;
-    }
-    if (param_names.empty()) {
-        mavlink::Pld_param_request_list msg;
-        Fill_target_ids(msg);
-        Send_message(msg);
+    } else if (param_names.empty()) {
+        Call_next_action(true);
+        Disable();
     } else {
         // Read single parameter
         mavlink::Pld_param_request_read msg;
@@ -540,8 +619,8 @@ Mavlink_vehicle::Read_parameters::Try()
             msg->param_id = n;
             Send_message(msg);
         }
+        Schedule_timer();
     }
-    Schedule_timer();
     return false;
 }
 
@@ -612,8 +691,8 @@ Mavlink_vehicle::Read_string_parameters::Enable(std::unordered_set<std::string> 
     attempts_left = try_count;
     param_names = std::move(names);
 
-    Register_mavlink_handler<mavlink::sph::MESSAGE_ID::PARAM_STR_VALUE,mavlink::sph::Extension>(
-            &Read_string_parameters::On_param_value, this, Mavlink_demuxer::COMPONENT_ID_ANY);
+    Register_mavlink_handler<mavlink::sph::MESSAGE_ID::PARAM_STR_VALUE, mavlink::sph::Extension>(
+        &Read_string_parameters::On_param_value, this, Mavlink_demuxer::COMPONENT_ID_ANY);
     Try();
 }
 
@@ -661,7 +740,7 @@ Mavlink_vehicle::Read_string_parameters::Schedule_timer()
 void
 Mavlink_vehicle::Read_string_parameters::On_param_value(
         mavlink::Message<mavlink::sph::MESSAGE_ID::PARAM_STR_VALUE,
-        ugcs::vsm::mavlink::sph::Extension>::Ptr message)
+        mavlink::sph::Extension>::Ptr message)
 {
     LOG_INFO("PARAM [%s (%d)] = %s",
             message->payload->param_id.Get_string().c_str(),
@@ -1218,7 +1297,6 @@ Mavlink_vehicle::Telemetry::On_estimate_link_quality()
         /* Compensate damping factor. */
         rate_quality = 1;
     }
-    double error_quality = 0;
 
     /* Calculate link quality based on error rate. */
     auto new_stats = vehicle.mav_stream->Get_decoder().Get_stats();
@@ -1234,6 +1312,7 @@ Mavlink_vehicle::Telemetry::On_estimate_link_quality()
     // But that requires taking into account the baud_rate and I do not want to
     // implement that right now as it there no real value.
     if (!vehicle.Is_mission_upload_active()) {
+        double error_quality = 0;
         if (ok_diff > 0 && err_diff >= 0) {
             error_quality = ok_diff / (ok_diff + err_diff);
         }
@@ -1276,7 +1355,8 @@ Mavlink_vehicle::Telemetry::On_sys_status(
 
     // ArDrone and ArduPlane always report 0 in onboard_control_sensors_health field,
     // So, set this only for arducopter.
-    if (vehicle.Get_autopilot_type() == "ardupilot") {  //TODO: move to built in enum
+    if (vehicle.Get_autopilot_type() == "ardupilot") {
+        // TODO: move to built in enum
         switch (vehicle.Get_mav_type()) {
         case mavlink::MAV_TYPE::MAV_TYPE_QUADROTOR:
         case mavlink::MAV_TYPE::MAV_TYPE_HEXAROTOR:
@@ -1402,11 +1482,12 @@ Mavlink_vehicle::Telemetry::On_global_position_int(
         } else {
             vehicle.t_course->Set_value_na();
         }
-        vehicle.t_ground_speed->Set_value(hypot(vx,vy));
+        vehicle.t_ground_speed->Set_value(hypot(vx, vy));
     }
 
     if (current_time_since_boot > prev_time_since_boot) {
-        vehicle.t_vertical_speed->Set_value((relative_altitude - prev_altitude) / (current_time_since_boot - prev_time_since_boot));
+        vehicle.t_vertical_speed->Set_value(
+            (relative_altitude - prev_altitude) / (current_time_since_boot - prev_time_since_boot));
     }
     prev_time_since_boot = current_time_since_boot;
     prev_altitude = relative_altitude;
@@ -1482,22 +1563,22 @@ Mavlink_vehicle::Telemetry::On_gps_raw(
     case mavlink::GPS_FIX_TYPE_NO_GPS:
     case mavlink::GPS_FIX_TYPE_NO_FIX:
     case mavlink::GPS_FIX_TYPE_STATIC:
-        vehicle.t_gps_fix->Set_value(ugcs::vsm::proto::GPS_FIX_TYPE_NONE);
+        vehicle.t_gps_fix->Set_value(proto::GPS_FIX_TYPE_NONE);
         break;
     case mavlink::GPS_FIX_TYPE_2D_FIX:
-        vehicle.t_gps_fix->Set_value(ugcs::vsm::proto::GPS_FIX_TYPE_2D);
+        vehicle.t_gps_fix->Set_value(proto::GPS_FIX_TYPE_2D);
         break;
     case mavlink::GPS_FIX_TYPE_3D_FIX:
-        vehicle.t_gps_fix->Set_value(ugcs::vsm::proto::GPS_FIX_TYPE_3D);
+        vehicle.t_gps_fix->Set_value(proto::GPS_FIX_TYPE_3D);
         break;
     case mavlink::GPS_FIX_TYPE_DGPS:
-        vehicle.t_gps_fix->Set_value(ugcs::vsm::proto::GPS_FIX_TYPE_DIFF);
+        vehicle.t_gps_fix->Set_value(proto::GPS_FIX_TYPE_DIFF);
         break;
     case mavlink::GPS_FIX_TYPE_RTK_FIXED:
-        vehicle.t_gps_fix->Set_value(ugcs::vsm::proto::GPS_FIX_TYPE_RTK_FIXED);
+        vehicle.t_gps_fix->Set_value(proto::GPS_FIX_TYPE_RTK_FIXED);
         break;
     case mavlink::GPS_FIX_TYPE_RTK_FLOAT:
-        vehicle.t_gps_fix->Set_value(ugcs::vsm::proto::GPS_FIX_TYPE_RTK_FLOAT);
+        vehicle.t_gps_fix->Set_value(proto::GPS_FIX_TYPE_RTK_FLOAT);
         break;
     }
     vehicle.Commit_to_ucs();
@@ -1505,16 +1586,26 @@ Mavlink_vehicle::Telemetry::On_gps_raw(
 
 void
 Mavlink_vehicle::Telemetry::On_target_position(
-    ugcs::vsm::mavlink::Message<ugcs::vsm::mavlink::MESSAGE_ID::POSITION_TARGET_GLOBAL_INT>::Ptr t)
+    mavlink::Message<mavlink::MESSAGE_ID::POSITION_TARGET_GLOBAL_INT>::Ptr t)
 {
-//    LOG("Target = %04X %d %d %f ", t->payload->type_mask.Get(), t->payload->lat_int.Get(), t->payload->lon_int.Get(), t->payload->alt.Get());
-    if ((t->payload->type_mask & 0x1) == 0) {
-        double lat = t->payload->lat_int;
+    uint16_t flag = t->payload->type_mask;
+    int ilat = t->payload->lat_int.Get();
+    int ilon = t->payload->lon_int.Get();
+    // LOG("Target = %04X %d %d %f ", flag, ilat, ilon, t->payload->alt.Get());
+    // Sanity check the coordinates before reporting.
+    if (ilat < -900000000 || ilat > 900000000 || ilat == 0) {
+        flag |= 0x1;
+    }
+    if (ilon < -1800000000 || ilon > 1800000000 || ilon == 0) {
+        flag |= 0x2;
+    }
+    if ((flag & 0x1) == 0) {
+        double lat = ilat;
         vehicle.t_target_latitude->Set_value(lat / 10000000 * M_PI / 180);
     }
 
-    if ((t->payload->type_mask & 0x2) == 0) {
-        double lon = t->payload->lon_int;
+    if ((flag & 0x2) == 0) {
+        double lon = ilon;
         vehicle.t_target_longitude->Set_value(lon / 10000000 * M_PI / 180);
     }
 
@@ -1764,7 +1855,7 @@ Mavlink_vehicle::Mission_upload::Dump_mission()
         (*f) << std::ctime(&t)
         << "Dumping mission for [" << vehicle.Get_model_name() << ":" << vehicle.Get_serial_number() << "]:"
         << std::endl << std::endl;
-        for (auto& iter: mission_items) {
+        for (auto& iter : mission_items) {
             (*f) << iter->Dump() << std::endl;
         }
         (*f) << std::endl << "END OF THE MISSION DUMP" << std::endl << std::endl;
@@ -1773,7 +1864,7 @@ Mavlink_vehicle::Mission_upload::Dump_mission()
 }
 
 uint32_t
-Mavlink_vehicle::Get_mission_item_hash(mavlink::Pld_mission_item& msg)
+Mavlink_vehicle::Get_mission_item_hash(const mavlink::Pld_mission_item& msg)
 {
     Crc32 h;
     // Hash command ID.

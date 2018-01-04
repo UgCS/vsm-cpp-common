@@ -53,7 +53,7 @@ Mavlink_vehicle_manager::On_disable()
 void
 Mavlink_vehicle_manager::Process_on_disable(Request::Ptr request)
 {
-	On_manager_disable();
+    On_manager_disable();
 
     for (auto& v : vehicles) {
         v.second.vehicle->Disable();
@@ -102,7 +102,7 @@ Mavlink_vehicle_manager::Load_vehicle_config()
     }
 
     if (!preconfigured.empty()) {
-    	LOG_INFO("%zu custom vehicle(-s) configured.", preconfigured.size());
+        LOG_INFO("%zu custom vehicle(-s) configured.", preconfigured.size());
     }
 
     Register_detectors();
@@ -116,8 +116,8 @@ Mavlink_vehicle_manager::Add_timeout_extension_pattern(const regex::regex& re)
 
 void
 Mavlink_vehicle_manager::Write_to_vehicle_timed_out(
-        const Operation_waiter::Ptr& waiter,
-        Mavlink_vehicle::Mavlink_stream::Weak_ptr mav_stream)
+    const Operation_waiter::Ptr& waiter,
+    ugcs::vsm::Mavlink_stream::Weak_ptr mav_stream)
 {
     auto locked = mav_stream.lock();
     Io_stream::Ref stream = locked ? locked->Get_stream() : nullptr;
@@ -129,8 +129,8 @@ Mavlink_vehicle_manager::Write_to_vehicle_timed_out(
 
 void
 Mavlink_vehicle_manager::On_param_value(
-        mavlink::Message<mavlink::MESSAGE_ID::PARAM_VALUE>::Ptr message,
-        Mavlink_vehicle::Mavlink_stream::Ptr mav_stream)
+    mavlink::Message<mavlink::MESSAGE_ID::PARAM_VALUE>::Ptr message,
+    ugcs::vsm::Mavlink_stream::Ptr mav_stream)
 {
     if (message->payload->param_id.Get_string() == "FRAME") {
         auto det_iter = detectors.find(mav_stream);
@@ -145,10 +145,9 @@ Mavlink_vehicle_manager::On_param_value(
 
 void
 Mavlink_vehicle_manager::Create_vehicle_wrapper(
-        Mavlink_vehicle::Mavlink_stream::Ptr mav_stream,
-        mavlink::System_id_common system_id,
-        uint8_t component_id
-        )
+    ugcs::vsm::Mavlink_stream::Ptr mav_stream,
+    uint8_t system_id,
+    uint8_t component_id)
 {
     std::string serial_number;
     std::string model_name;
@@ -201,10 +200,11 @@ Mavlink_vehicle_manager::Create_vehicle_wrapper(
         vehicle->Disable();
     }
 
-    LOG_INFO("Creating vehicle: [%s:%s] Mavlink id %d",
+    LOG_INFO("Creating vehicle: [%s:%s] Mavlink ID: %d, Type: %d",
             model_name.c_str(),
             serial_number.c_str(),
-            system_id);
+            system_id,
+            frame_type);
 
     vehicle = Create_mavlink_vehicle(
             system_id,
@@ -215,8 +215,7 @@ Mavlink_vehicle_manager::Create_vehicle_wrapper(
             mission_dump_path,
             serial_number,
             model_name,
-            is_preconfigured
-            );
+            is_preconfigured);
 
     vehicle->Enable();
     /* Keep the stream to see when it will be closed to delete the vehicle. */
@@ -232,8 +231,8 @@ Mavlink_vehicle_manager::Create_vehicle_wrapper(
 
 void
 Mavlink_vehicle_manager::On_heartbeat(
-        mavlink::Message<mavlink::MESSAGE_ID::HEARTBEAT>::Ptr message,
-        Mavlink_vehicle::Mavlink_stream::Ptr mav_stream)
+    mavlink::Message<mavlink::MESSAGE_ID::HEARTBEAT>::Ptr message,
+    ugcs::vsm::Mavlink_stream::Ptr mav_stream)
 {
     // Ignore heartbeats of type GCS. Sent by Ardupilot 3.3.1 SITL.
     if (message->payload->type == mavlink::MAV_TYPE_GCS) {
@@ -247,8 +246,6 @@ Mavlink_vehicle_manager::On_heartbeat(
         return;
     }
 
-    std::string serial_number;
-    std::string model_name;
     auto system_id = message->Get_sender_system_id();
     auto component_id = message->Get_sender_component_id();
 
@@ -290,8 +287,7 @@ Mavlink_vehicle_manager::On_heartbeat(
                 Create_vehicle_wrapper(
                         mav_stream,
                         system_id,
-                        component_id
-                        );
+                        component_id);
             }
         }
     }
@@ -299,13 +295,13 @@ Mavlink_vehicle_manager::On_heartbeat(
 
 void
 Mavlink_vehicle_manager::On_raw_data(
-        ugcs::vsm::Io_buffer::Ptr buffer,
-        Mavlink_vehicle::Mavlink_stream::Ptr mav_stream)
+    ugcs::vsm::Io_buffer::Ptr buffer,
+    ugcs::vsm::Mavlink_stream::Ptr mav_stream)
 {
     auto iter = detectors.find(mav_stream);
     auto& ctx = iter->second;
     auto str = buffer->Get_string();
-    for(auto c: str) {
+    for (auto c : str) {
         bool handle = false;
         if (!c || c == '\r' || c == '\n') {
             handle = !ctx.curr_line.empty();
@@ -322,24 +318,24 @@ Mavlink_vehicle_manager::On_raw_data(
 
 void
 Mavlink_vehicle_manager::Handle_raw_line(
-        Detector_ctx& ctx,
-        const Mavlink_vehicle::Mavlink_stream::Ptr& mav_stream)
+    Detector_ctx& ctx,
+    const ugcs::vsm::Mavlink_stream::Ptr& mav_stream)
 {
-    for(auto& re: extension_patterns) {
+    for (auto& re : extension_patterns) {
         regex::smatch smatch;
         if (regex::regex_search(ctx.curr_line, smatch, re)) {
             LOG_DEBUG("Detection timeout extended due to pattern match: %s",
                     ctx.curr_line.c_str());
             ctx.timeout += EXTENDED_TIMEOUT / TIMER_INTERVAL;
             mav_stream->Get_decoder().Register_raw_data_handler(
-                    Mavlink_vehicle::Mavlink_stream::Decoder::Raw_data_handler());
+                ugcs::vsm::Mavlink_stream::Decoder::Raw_data_handler());
             break;
         }
     }
 }
 
 void
-Mavlink_vehicle_manager::Schedule_next_read(Mavlink_vehicle::Mavlink_stream::Ptr mav_stream)
+Mavlink_vehicle_manager::Schedule_next_read(ugcs::vsm::Mavlink_stream::Ptr mav_stream)
 {
     auto stream = mav_stream->Get_stream();
     if (stream) {
@@ -368,9 +364,9 @@ Mavlink_vehicle_manager::Schedule_next_read(Mavlink_vehicle::Mavlink_stream::Ptr
 
 void
 Mavlink_vehicle_manager::On_stream_read(
-        Io_buffer::Ptr buffer,
-        Io_result result,
-        Mavlink_vehicle::Mavlink_stream::Ptr mav_stream)
+    Io_buffer::Ptr buffer,
+    Io_result result,
+    ugcs::vsm::Mavlink_stream::Ptr mav_stream)
 {
     /* Make sure, Mavlink stream is still in use by manager. */
     if (mav_stream->Get_stream()) {
@@ -389,13 +385,12 @@ Mavlink_vehicle_manager::On_stream_read(
 Request_worker::Ptr
 Mavlink_vehicle_manager::Get_worker()
 {
-	return worker;
+    return worker;
 }
 
 void
 Mavlink_vehicle_manager::On_manager_disable()
 {
-
 }
 
 bool
@@ -412,12 +407,12 @@ Mavlink_vehicle_manager::On_timer()
          * OR...
          * Timeout occurred
          */
-        if (	(	stats.bytes_received > MAX_UNDETECTED_BYTES
-        		&&	stats.bad_checksum == 0
-        		&&  stats.bad_length == 0
-        		&& 	stats.handled == 0
-        		&& 	stats.no_handler == 0)
-            ||	ctx.timeout == 0) {
+        if (    (   stats.bytes_received > MAX_UNDETECTED_BYTES
+                &&  stats.bad_checksum == 0
+                &&  stats.bad_length == 0
+                &&  stats.handled == 0
+                &&  stats.no_handler == 0)
+            ||  ctx.timeout == 0) {
             auto stream = mav_stream->Get_stream();
             /* Signal transport_detector that this is not our protocol. */
             LOG_INFO("Mavlink not detected on stream [%s].", stream->Get_name().c_str());
@@ -454,7 +449,7 @@ Mavlink_vehicle_manager::Handle_new_connection(
         ugcs::vsm::Optional<std::string> custom_model_name,
         ugcs::vsm::Optional<std::string> custom_serial_number)
 {
-    auto mav_stream = Mavlink_vehicle::Mavlink_stream::Create(stream);
+    auto mav_stream = ugcs::vsm::Mavlink_stream::Create(stream);
     mav_stream->Bind_decoder_demuxer();
 
     LOG_INFO("New connection [%s:%d].", name.c_str(), baud);
@@ -481,11 +476,10 @@ Mavlink_vehicle_manager::Handle_new_connection(
                     peer_addr,
                     custom_model_name,
                     custom_serial_number,
-                    autopilot_type
-                    ));
+                    autopilot_type));
 
     mav_stream->Get_decoder().Register_raw_data_handler(
-            Mavlink_vehicle::Mavlink_stream::Decoder::Make_raw_data_handler(
+        ugcs::vsm::Mavlink_stream::Decoder::Make_raw_data_handler(
                     &Mavlink_vehicle_manager::On_raw_data,
                     Shared_from_this(),
                     mav_stream));

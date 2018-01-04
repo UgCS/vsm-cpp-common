@@ -22,13 +22,6 @@ class Mavlink_vehicle: public ugcs::vsm::Vehicle
 {
     DEFINE_COMMON_CLASS(Mavlink_vehicle, ugcs::vsm::Vehicle)
 public:
-
-    /** Standard kind of Mavlink. */
-    typedef ugcs::vsm::mavlink::Mavlink_kind_standard Mavlink_kind;
-
-    /** Standard Mavlink stream. */
-    typedef ugcs::vsm::Mavlink_stream<Mavlink_kind> Mavlink_stream;
-
     template<typename... Args>
     Mavlink_vehicle(
         ugcs::vsm::Mavlink_demuxer::System_id system_id,
@@ -45,7 +38,7 @@ public:
                 real_system_id(system_id),
                 real_component_id(component_id),
                 mission_dump_path(mission_dump_path),
-                mav_stream(Mavlink_stream::Create(stream)),
+                mav_stream(ugcs::vsm::Mavlink_stream::Create(stream)),
             heartbeat(*this),
             statistics(*this),
             read_parameters(*this),
@@ -67,16 +60,15 @@ public:
         t_servo_pwm_6 = Add_telemetry(subsystems.fc, "servo_pwm_6", ugcs::vsm::proto::FIELD_SEMANTIC_NUMERIC);
         t_servo_pwm_7 = Add_telemetry(subsystems.fc, "servo_pwm_7", ugcs::vsm::proto::FIELD_SEMANTIC_NUMERIC);
         t_servo_pwm_8 = Add_telemetry(subsystems.fc, "servo_pwm_8", ugcs::vsm::proto::FIELD_SEMANTIC_NUMERIC);
-
     }
 
     /** System ID of a VSM itself. Thats is the value seen by vehicle. Value
      * to be defined by a subclass. */
-    const static ugcs::vsm::Mavlink_demuxer::System_id VSM_SYSTEM_ID;
+    static const ugcs::vsm::Mavlink_demuxer::System_id VSM_SYSTEM_ID;
 
     /** Component ID of VSM. Use this as source component_id in all messages
      * from vsm to vehicle. Value to be defined by a subclass.*/
-    const static ugcs::vsm::Mavlink_demuxer::Component_id VSM_COMPONENT_ID;
+    static const ugcs::vsm::Mavlink_demuxer::Component_id VSM_COMPONENT_ID;
 
     /** Write operations timeout. */
     constexpr static std::chrono::seconds
@@ -86,7 +78,21 @@ public:
     Is_mission_upload_active();
 
     void
-    Send_message(ugcs::vsm::mavlink::Payload_base& payload);
+    Inject_message(
+        ugcs::vsm::mavlink::MESSAGE_ID_TYPE message_id,
+        uint8_t sys,
+        uint8_t cmp,
+        ugcs::vsm::Io_buffer::Ptr buf);
+
+protected:
+    void
+    Send_message(const ugcs::vsm::mavlink::Payload_base& payload);
+
+    void
+    Send_message_v1(const ugcs::vsm::mavlink::Payload_base& payload);
+
+    void
+    Send_message_v2(const ugcs::vsm::mavlink::Payload_base& payload);
 
     /** Custom telemetry for mavlink vehicles*/
     ugcs::vsm::Property::Ptr t_servo_pwm_1 = nullptr;
@@ -97,9 +103,6 @@ public:
     ugcs::vsm::Property::Ptr t_servo_pwm_6 = nullptr;
     ugcs::vsm::Property::Ptr t_servo_pwm_7 = nullptr;
     ugcs::vsm::Property::Ptr t_servo_pwm_8 = nullptr;
-
-
-protected:
 
     /** How much reported vehicle clock can differ to drop altitude origin */
     static constexpr std::chrono::milliseconds
@@ -180,14 +183,16 @@ protected:
 
     /** Get flight base mode. */
     uint8_t
-    Get_base_mode() { return base_mode; };
+    Get_base_mode() {
+        return base_mode;
+    }
 
     /** Invoked when write operation to the vehicle has timed out.
      */
     void
     Write_to_vehicle_timed_out(
             const ugcs::vsm::Operation_waiter::Ptr&,
-            Mavlink_stream::Weak_ptr);
+            ugcs::vsm::Mavlink_stream::Weak_ptr);
 
     static const std::string
     Mav_result_to_string(int);
@@ -230,7 +235,7 @@ protected:
     ugcs::vsm::Optional<std::string> mission_dump_path;
 
     /** Mavlink streams towards the vehicle. */
-    Mavlink_stream::Ptr mav_stream;
+    ugcs::vsm::Mavlink_stream::Ptr mav_stream;
 
     /** Current Mavlink read operation. */
     ugcs::vsm::Operation_waiter read_op;
@@ -251,10 +256,12 @@ protected:
     ugcs::vsm::Vehicle::Command_map current_command_map;
 
     bool
-    Is_armed() {return (base_mode & ugcs::vsm::mavlink::MAV_MODE_FLAG::MAV_MODE_FLAG_SAFETY_ARMED);};
+    Is_armed() {
+        return (base_mode & ugcs::vsm::mavlink::MAV_MODE_FLAG::MAV_MODE_FLAG_SAFETY_ARMED);
+    }
 
     uint32_t
-    Get_mission_item_hash(ugcs::vsm::mavlink::Pld_mission_item& msg);
+    Get_mission_item_hash(const ugcs::vsm::mavlink::Pld_mission_item& msg);
 
     /** Represents an activity ongoing with a vehicle. This is mostly a
      * convenience class to separate activity-related methods and members.
@@ -264,7 +271,6 @@ protected:
      */
     class Activity {
     public:
-
         /** Handler for a next action to execute when activity finishes.
          * Parameter denotes whether activity has finished successfully (true)
          * or not (false). */
@@ -296,7 +302,7 @@ protected:
 
         /** Disable event to be overridden by a subclass, if necessary. */
         virtual void
-        On_disable() {};
+        On_disable() {}
 
         /** Send next action to execute. */
         void
@@ -344,7 +350,7 @@ protected:
         void
         Unregister_mavlink_handlers()
         {
-            for(auto& key: registered_handlers) {
+            for (auto& key : registered_handlers) {
                 vehicle.mav_stream->Get_demuxer().Unregister_handler(key);
             }
             registered_handlers.clear();
@@ -389,7 +395,7 @@ protected:
         void
         Send_message(
                 const ugcs::vsm::mavlink::Payload_base& payload,
-                typename Mavlink_kind::System_id system_id = VSM_SYSTEM_ID,
+                uint8_t system_id = VSM_SYSTEM_ID,
                 uint8_t component_id = VSM_COMPONENT_ID)
         {
             vehicle.mav_stream->Send_message(
@@ -452,7 +458,6 @@ protected:
 
         /** Timer for missing heartbeats. */
         ugcs::vsm::Timer_processor::Timer::Ptr timer;
-
     } heartbeat;
 
     class Statistics: public Activity {
@@ -503,7 +508,6 @@ protected:
 
     class Read_parameters: public Activity {
     public:
-
         using Activity::Activity;
 
         /** Handler for status text. */
@@ -547,8 +551,9 @@ protected:
         /** Print parameter value. */
         template<typename Value>
         void
-        Print_param(typename ugcs::vsm::mavlink::Message<ugcs::vsm::mavlink::MESSAGE_ID::PARAM_VALUE>::Ptr& message,
-                Value value)
+        Print_param(
+            const typename ugcs::vsm::mavlink::Message<ugcs::vsm::mavlink::MESSAGE_ID::PARAM_VALUE>::Ptr& message,
+            Value value)
         {
             std::stringstream buf;
             buf << value;
@@ -573,7 +578,6 @@ protected:
 
     class Read_string_parameters: public Activity {
     public:
-
         using Activity::Activity;
 
         /** Handler for status text. */
@@ -627,7 +631,6 @@ protected:
     /** Data related to initial reading of parameters. */
     class Read_version: public Activity {
     public:
-
         using Activity::Activity;
 
         enum {
@@ -678,13 +681,11 @@ protected:
 
         /** Optional handler. Called on  each retrieved parameter. */
         Version_handler version_handler;
-
     } read_version;
 
     /** Write parameters to the vehicle. */
     class Do_command_long: public Activity {
     public:
-
         using Activity::Activity;
 
         /** List of commands. */
@@ -723,7 +724,6 @@ protected:
     /** Write parameters to the vehicle. */
     class Write_parameters: public Activity {
     public:
-
         using Activity::Activity;
 
         /** List of parameters. */
@@ -765,7 +765,7 @@ protected:
         // This is needed to initialize home_location correctly.
         // "using Activity::Activity;" here produces compiler error.
         Read_waypoints(Mavlink_vehicle& vehicle):
-            Activity(vehicle){};
+            Activity(vehicle) {}
 
         /** Handler for status text. */
         typedef ugcs::vsm::Callback_proxy<
@@ -826,7 +826,6 @@ protected:
 
         /** Retry timer. */
         ugcs::vsm::Timer_processor::Timer::Ptr timer;
-
     } read_waypoints;
 
     class Telemetry: public Activity {
@@ -920,7 +919,8 @@ protected:
         On_mission_current(ugcs::vsm::mavlink::Message<ugcs::vsm::mavlink::MESSAGE_ID::MISSION_CURRENT>::Ptr);
 
         void
-        On_target_position(ugcs::vsm::mavlink::Message<ugcs::vsm::mavlink::MESSAGE_ID::POSITION_TARGET_GLOBAL_INT>::Ptr);
+        On_target_position(
+            ugcs::vsm::mavlink::Message<ugcs::vsm::mavlink::MESSAGE_ID::POSITION_TARGET_GLOBAL_INT>::Ptr);
 
         void
         On_radio(ugcs::vsm::mavlink::Message<ugcs::vsm::mavlink::apm::MESSAGE_ID::RADIO,
@@ -951,7 +951,7 @@ protected:
         size_t telemetry_messages_last = 0;
 
         /** Statistics from previous measurement. */
-        ugcs::vsm::Mavlink_decoder<Mavlink_kind>::Stats prev_stats;
+        ugcs::vsm::Mavlink_decoder::Stats prev_stats;
 
         /** Accumulated rx errors which are not yet accounted by link quality
          * algorithm.
@@ -972,7 +972,6 @@ protected:
 
         /** Last altitude in GLOBAL_POSITION_INT message. used to calculate vspeed */
         double prev_altitude = 0;
-
     } telemetry;
 
     /** Mavlink mission upload protocol. */
@@ -1038,8 +1037,7 @@ protected:
         ugcs::vsm::Timer_processor::Timer::Ptr timer;
     } mission_upload;
 
-    class Mavlink_route
-    {
+    class Mavlink_route {
     public:
         void
         Reset();
@@ -1078,6 +1076,15 @@ protected:
     friend class Emulator_vehicle;
     friend class Ardrone_vehicle;
     friend class Px4_vehicle;
+
+private:
+    void
+    Handle_inject_message(
+        ugcs::vsm::mavlink::MESSAGE_ID_TYPE msg,
+        uint8_t sys_id,
+        uint8_t cmp_id,
+        ugcs::vsm::Io_buffer::Ptr buf,
+        ugcs::vsm::Request::Ptr request);
 };
 
 

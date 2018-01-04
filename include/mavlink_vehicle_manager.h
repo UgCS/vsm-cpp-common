@@ -18,15 +18,14 @@
  */
 class Mavlink_vehicle_manager: public ugcs::vsm::Request_processor {
     DEFINE_COMMON_CLASS(Mavlink_vehicle_manager, ugcs::vsm::Request_processor)
-public:
 
+public:
     /** Constructor. */
     Mavlink_vehicle_manager(
             const std::string default_model_name,
             const std::string config_prefix);
 
 protected:
-
     /** Method for Mavlink vehicle creation, to be overridden by subclass. */
     virtual Mavlink_vehicle::Ptr
     Create_mavlink_vehicle(
@@ -53,16 +52,16 @@ protected:
     /** Handler for a new transport connection. */
     void
     Handle_new_connection(
-    		std::string portname,
-    		int baud,
-    		ugcs::vsm::Socket_address::Ptr,
-    		ugcs::vsm::Io_stream::Ref,
-    		ugcs::vsm::mavlink::MAV_AUTOPILOT autopilot_type,
-    		bool detect_frame = false,
-    		ugcs::vsm::Optional<std::string> custom_model_name =
-    				ugcs::vsm::Optional<std::string>(),
-    		ugcs::vsm::Optional<std::string> custom_serial_number =
-    				ugcs::vsm::Optional<std::string>());
+            std::string portname,
+            int baud,
+            ugcs::vsm::Socket_address::Ptr,
+            ugcs::vsm::Io_stream::Ref,
+            ugcs::vsm::mavlink::MAV_AUTOPILOT autopilot_type,
+            bool detect_frame = false,
+            ugcs::vsm::Optional<std::string> custom_model_name =
+                    ugcs::vsm::Optional<std::string>(),
+            ugcs::vsm::Optional<std::string> custom_serial_number =
+                    ugcs::vsm::Optional<std::string>());
 
     /** Default model name to use in UCS system id calculation. */
     std::string default_model_name;
@@ -109,10 +108,9 @@ private:
 
     void
     Create_vehicle_wrapper(
-            Mavlink_vehicle::Mavlink_stream::Ptr mav_stream,
-            ugcs::vsm::mavlink::System_id_common system_id,
-            uint8_t component_id
-            );
+            ugcs::vsm::Mavlink_stream::Ptr mav_stream,
+            uint8_t system_id,
+            uint8_t component_id);
 
     /** Prototcol detection polling interval. */
     const std::chrono::milliseconds TIMER_INTERVAL = std::chrono::milliseconds(100);
@@ -143,7 +141,6 @@ private:
     /** Trivial detector state. */
     class Detector_ctx {
     public:
-
         Detector_ctx(Detector_ctx&&) = default;
 
         Detector_ctx(
@@ -189,7 +186,7 @@ private:
      * Stream lives in this state for 1 second until Mavlink protocol detected
      * or detection failed.
      */
-    std::unordered_map<Mavlink_vehicle::Mavlink_stream::Ptr, Detector_ctx> detectors;
+    std::unordered_map<ugcs::vsm::Mavlink_stream::Ptr, Detector_ctx> detectors;
 
     /** Watchdog timer for detection. */
     ugcs::vsm::Timer_processor::Timer::Ptr watchdog_timer;
@@ -203,34 +200,34 @@ private:
     void
     Write_to_vehicle_timed_out(
             const ugcs::vsm::Operation_waiter::Ptr& waiter,
-            Mavlink_vehicle::Mavlink_stream::Weak_ptr mav_stream);
+            ugcs::vsm::Mavlink_stream::Weak_ptr mav_stream);
 
     void
     On_param_value(
             ugcs::vsm::mavlink::Message<ugcs::vsm::mavlink::MESSAGE_ID::PARAM_VALUE>::Ptr message,
-            Mavlink_vehicle::Mavlink_stream::Ptr mav_stream);
+            ugcs::vsm::Mavlink_stream::Ptr mav_stream);
 
     /** Create new or update existing vehicles based on received system id
      * and type of the vehicle. */
     void
     On_heartbeat(
             ugcs::vsm::mavlink::Message<ugcs::vsm::mavlink::MESSAGE_ID::HEARTBEAT>::Ptr message,
-            Mavlink_vehicle::Mavlink_stream::Ptr mav_stream);
+            ugcs::vsm::Mavlink_stream::Ptr mav_stream);
 
     /** Raw data handler from Mavlink stream. */
     void
-    On_raw_data(ugcs::vsm::Io_buffer::Ptr, Mavlink_vehicle::Mavlink_stream::Ptr);
+    On_raw_data(ugcs::vsm::Io_buffer::Ptr, ugcs::vsm::Mavlink_stream::Ptr);
 
     /** Handle full line from the raw data. */
     void
-    Handle_raw_line(Detector_ctx&, const Mavlink_vehicle::Mavlink_stream::Ptr&);
+    Handle_raw_line(Detector_ctx&, const ugcs::vsm::Mavlink_stream::Ptr&);
 
     void
-    Schedule_next_read(Mavlink_vehicle::Mavlink_stream::Ptr);
+    Schedule_next_read(ugcs::vsm::Mavlink_stream::Ptr);
 
     /** Stream read completion handler. */
     void
-    On_stream_read(ugcs::vsm::Io_buffer::Ptr, ugcs::vsm::Io_result, Mavlink_vehicle::Mavlink_stream::Ptr);
+    On_stream_read(ugcs::vsm::Io_buffer::Ptr, ugcs::vsm::Io_result, ugcs::vsm::Mavlink_stream::Ptr);
 
     /** Process disable event from the processor context. */
     void
