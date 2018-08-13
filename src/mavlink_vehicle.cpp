@@ -1,4 +1,4 @@
-// Copyright (c) 2017, Smart Projects Holdings Ltd
+// Copyright (c) 2018, Smart Projects Holdings Ltd
 // All rights reserved.
 // See LICENSE file for license details.
 
@@ -44,6 +44,10 @@ Mavlink_vehicle::On_enable()
     mav_stream->Bind_decoder_demuxer();
     Schedule_next_read();
     Wait_for_vehicle();
+
+    // Assume downlink and uplink is present for mavlink vehicles.
+    t_uplink_present->Set_value(true);
+    t_downlink_present->Set_value(true);
 }
 
 void
@@ -60,7 +64,14 @@ Mavlink_vehicle::On_disable()
 mavlink::MAV_TYPE
 Mavlink_vehicle::Get_mav_type() const
 {
-    return type;
+    return mav_type;
+}
+
+/** Get the vendor of vehicle */
+Mavlink_vehicle::Vendor
+Mavlink_vehicle::Get_vendor() const
+{
+    return vehicle_vendor;
 }
 
 void
@@ -110,13 +121,7 @@ Mavlink_vehicle::Schedule_next_read()
 {
     read_op.Abort();
     size_t to_read = mav_stream->Get_decoder().Get_next_read_size();
-    size_t max_read;
-    if (mav_stream->Get_stream()->Get_type() == Io_stream::Type::UDP) {
-        max_read = MIN_UDP_PAYLOAD_SIZE_TO_READ;
-    } else {
-        max_read = MAX_TCP_PAYLOAD_SIZE_TO_READ;
-    }
-    read_op = mav_stream->Get_stream()->Read(max_read, to_read,
+    read_op = mav_stream->Get_stream()->Read(0, to_read,
             Make_read_callback(&Mavlink_vehicle::On_read_handler,
                                Shared_from_this()),
             Get_completion_ctx());
@@ -372,7 +377,7 @@ void
 Mavlink_vehicle::Set_parameters_from_properties(const std::string& prefix)
 {
     auto pr = Properties::Get_instance();
-    Write_parameters::List param_list;
+    Write_parameters::List param_list(real_system_id, real_component_id);
     for (auto prop = pr->begin(prefix); prop != pr->end(); prop++) {
         try {
             if (prop.Get_count() == 4) {
@@ -380,15 +385,29 @@ Mavlink_vehicle::Set_parameters_from_properties(const std::string& prefix)
                 float value = pr->Get_float((*prop));
                 mavlink::MAV_PARAM_TYPE type;
                 if (Verify_parameter(name, value, type)) {
-                    mavlink::Pld_param_set param;
-                    param->target_system = real_system_id;
-                    param->target_component = real_component_id;
-                    param->param_id = name;
-                    param->param_type = type;
-                    param->param_value = value;
-                    param_list.emplace_back(param);
+                    switch (type) {
+                    case mavlink::MAV_PARAM_TYPE::MAV_PARAM_TYPE_INT8:
+                    case mavlink::MAV_PARAM_TYPE::MAV_PARAM_TYPE_INT16:
+                    case mavlink::MAV_PARAM_TYPE::MAV_PARAM_TYPE_INT32:
+                    case mavlink::MAV_PARAM_TYPE::MAV_PARAM_TYPE_UINT8:
+                    case mavlink::MAV_PARAM_TYPE::MAV_PARAM_TYPE_UINT16:
+                    case mavlink::MAV_PARAM_TYPE::MAV_PARAM_TYPE_UINT32:
+                        if (Get_vendor() == Vendor::PX4) {
+                            param_list.Append_int_px4(name, value, type);
+                        } else {
+                            param_list.Append_int_ardu(name, value, type);
+                        }
+                        break;
+                    case mavlink::MAV_PARAM_TYPE::MAV_PARAM_TYPE_REAL32:
+                        param_list.Append_float(name, value);
+                        break;
+                    default:
+                        // 64bit types not spported
+                        VEHICLE_LOG_WRN((*this), "PARAM %s Unsupported type %d",
+                            name.c_str(), type);
+                    }
                 } else {
-                    VEHICLE_LOG_ERR((*this), "Invalid parameter/value specified (%s %f)", name.c_str(), value);
+                    VEHICLE_LOG_ERR((*this), "Ignoring parameter (%s %f)", name.c_str(), value);
                 }
             }
         } catch (...) {
@@ -454,54 +473,50 @@ void
 Mavlink_vehicle::Heartbeat::On_heartbeat(
         mavlink::Message<mavlink::MESSAGE_ID::HEARTBEAT>::Ptr message)
 {
-    // skip wrong heartbeat
-    if (message->payload->autopilot.Get() == 0 && message->payload->type == 0) {return;}
-
     received_count++;
 
-    // Ignore heartbeats of type GCS. Sent by Ardupilot 3.3.1 SITL.
-    if (message->payload->type == mavlink::MAV_TYPE_GCS) {
-        return;
+    if (Is_vehicle_heartbeat_valid(message)) {
+        vehicle.base_mode = message->payload->base_mode.Get();
+
+        int system_status = message->payload->system_status.Get();
+        switch (system_status) {
+            case mavlink::MAV_STATE_STANDBY:
+                vehicle.t_autopilot_status->Set_value(proto::AUTOPILOT_STATUS_STANDBY);
+                break;
+            case mavlink::MAV_STATE_ACTIVE:
+                vehicle.t_autopilot_status->Set_value(proto::AUTOPILOT_STATUS_ACTIVE);
+                break;
+            case mavlink::MAV_STATE_CRITICAL:
+                vehicle.t_autopilot_status->Set_value(proto::AUTOPILOT_STATUS_CRITICAL);
+                if (vehicle.current_autopilot_status != system_status) {
+                    vehicle.Add_status_message("Attention! Autopilot is in CRITICAL state!");
+                }
+                break;
+            case mavlink::MAV_STATE_EMERGENCY:
+                vehicle.t_autopilot_status->Set_value(proto::AUTOPILOT_STATUS_EMERGENCY);
+                if (vehicle.current_autopilot_status != system_status) {
+                    vehicle.Add_status_message("Attention! Autopilot is in EMERGENCY state!");
+                }
+                break;
+            default:
+                vehicle.t_autopilot_status->Set_value_na();
+                break;
+        }
+
+        vehicle.current_autopilot_status = system_status;
+
+
+        if (!first_ok_received) {
+            first_ok_received = true;
+            VEHICLE_LOG_INF(vehicle, "First heartbeat received.");
+            vehicle.telemetry.Enable();
+            /* Don't read waypoints. It is for debug only. */
+            // vehicle.read_waypoints.Enable();
+        }
     }
 
-    vehicle.base_mode = message->payload->base_mode.Get();
-
-    int system_status = message->payload->system_status.Get();
-    switch (system_status) {
-        case mavlink::MAV_STATE_STANDBY:
-            vehicle.t_autopilot_status->Set_value(proto::AUTOPILOT_STATUS_STANDBY);
-            break;
-        case mavlink::MAV_STATE_ACTIVE:
-            vehicle.t_autopilot_status->Set_value(proto::AUTOPILOT_STATUS_ACTIVE);
-            break;
-        case mavlink::MAV_STATE_CRITICAL:
-            vehicle.t_autopilot_status->Set_value(proto::AUTOPILOT_STATUS_CRITICAL);
-            if (vehicle.current_autopilot_status != system_status) {
-                vehicle.Add_status_message("Attention! Autopilot is in CRITICAL state!");
-            }
-            break;
-        case mavlink::MAV_STATE_EMERGENCY:
-            vehicle.t_autopilot_status->Set_value(proto::AUTOPILOT_STATUS_EMERGENCY);
-            if (vehicle.current_autopilot_status != system_status) {
-                vehicle.Add_status_message("Attention! Autopilot is in EMERGENCY state!");
-            }
-            break;
-        default:
-            vehicle.t_autopilot_status->Set_value_na();
-            break;
-    }
-
-    vehicle.current_autopilot_status = system_status;
-
+    // Pass any heartbeat to the vehicle.
     vehicle.Process_heartbeat(message);
-
-    if (!first_ok_received) {
-        first_ok_received = true;
-        VEHICLE_LOG_INF(vehicle, "First heartbeat received.");
-        vehicle.telemetry.Enable();
-        /* Don't read waypoints. It is for debug only. */
-        // vehicle.read_waypoints.Enable();
-    }
 }
 
 bool
@@ -551,12 +566,12 @@ bool
 Mavlink_vehicle::Statistics::On_timer()
 {
     auto& stats = vehicle.mav_stream->Get_decoder().Get_stats();
-    VEHICLE_LOG_DBG(vehicle, "%ld Mavlink messages processed, link quality %.1f%%",
-        static_cast<int64_t>(stats.handled - num_of_processed_messages),
+    VEHICLE_LOG_DBG(vehicle, "%d Mavlink messages processed, link quality %2.0f%%",
+        static_cast<int32_t>(stats.handled - num_of_processed_messages),
         vehicle.telemetry.link_quality * 100);
     if (stats.bad_checksum != num_of_csum_errors) {
-        VEHICLE_LOG_DBG(vehicle, "%ld Mavlink csum errors",
-            static_cast<int64_t>(stats.bad_checksum - num_of_csum_errors));
+        VEHICLE_LOG_DBG(vehicle, "%d Mavlink csum errors",
+            static_cast<int32_t>(stats.bad_checksum - num_of_csum_errors));
         num_of_csum_errors = stats.bad_checksum;
     }
     num_of_processed_messages = stats.handled;
@@ -578,11 +593,16 @@ Mavlink_vehicle::Statistics::On_status_text(
 void
 Mavlink_vehicle::Read_parameters::Enable(std::unordered_set<std::string> names)
 {
-    attempts_left = try_count;
-    param_names = names;
-    Register_mavlink_handler<mavlink::MESSAGE_ID::PARAM_VALUE>(
-        &Read_parameters::On_param_value, this, Mavlink_demuxer::COMPONENT_ID_ANY);
-    Try();
+    if (names.empty()) {
+        Call_next_action(true);
+        Disable();
+    } else {
+        attempts_left = try_count;
+        param_names = names;
+        Register_mavlink_handler<mavlink::MESSAGE_ID::PARAM_VALUE>(
+            &Read_parameters::On_param_value, this, Mavlink_demuxer::COMPONENT_ID_ANY);
+        Try();
+    }
 }
 
 bool
@@ -606,6 +626,7 @@ bool
 Mavlink_vehicle::Read_parameters::Try()
 {
     if (!attempts_left--) {
+        Call_next_action(true, "All attempts failed");
         Disable();
     } else if (param_names.empty()) {
         Call_next_action(true);
@@ -789,6 +810,7 @@ bool
 Mavlink_vehicle::Read_version::Try()
 {
     if (!attempts_left--) {
+        Call_next_action(false, "Timeout");
         Disable();
         return false;
     }
@@ -818,7 +840,59 @@ Mavlink_vehicle::Read_version::On_version(
     if (version_handler) {
         version_handler(message->payload);
     }
+    Call_next_action(true);
     Disable();
+}
+
+Mavlink_vehicle::Write_parameters::_List::_List(
+    ugcs::vsm::Mavlink_demuxer::System_id sysid,
+    ugcs::vsm::Mavlink_demuxer::Component_id compid):
+    sysid(sysid),
+    compid(compid)
+{
+}
+
+void
+Mavlink_vehicle::Write_parameters::_List::Append_float(const std::string& name, float value)
+{
+    mavlink::Pld_param_set param;
+    param->target_system = sysid;
+    param->target_component = compid;
+    param->param_id = name;
+    param->param_type = mavlink::MAV_PARAM_TYPE::MAV_PARAM_TYPE_REAL32;
+    param->param_value = value;
+    push_back(param);
+}
+
+void
+Mavlink_vehicle::Write_parameters::_List::Append_int_ardu(
+    const std::string& name,
+    int32_t value,
+    ugcs::vsm::mavlink::MAV_PARAM_TYPE type)
+{
+    mavlink::Pld_param_set param;
+    param->target_system = sysid;
+    param->target_component = compid;
+    param->param_id = name;
+    param->param_type = type;
+    param->param_value = static_cast<float>(value);
+    push_back(param);
+}
+
+void
+Mavlink_vehicle::Write_parameters::_List::Append_int_px4(
+    const std::string& name,
+    int32_t value,
+    ugcs::vsm::mavlink::MAV_PARAM_TYPE type)
+{
+    mavlink::Pld_param_set param;
+    param->target_system = sysid;
+    param->target_component = compid;
+    param->param_id = name;
+    param->param_type = type;
+    // PX4 uses bitwise representation of int in float field.
+    memcpy(&param->param_value, &value, sizeof(value));
+    push_back(param);
 }
 
 void
@@ -1169,6 +1243,9 @@ Mavlink_vehicle::Telemetry::Enable()
     Register_telemetry_handler<mavlink::MESSAGE_ID::MISSION_CURRENT>(
             &Telemetry::On_mission_current, this, Mavlink_demuxer::COMPONENT_ID_ANY);
 
+    Register_telemetry_handler<mavlink::MESSAGE_ID::VIBRATION>(
+            &Telemetry::On_vibration, this, Mavlink_demuxer::COMPONENT_ID_ANY);
+
     Register_telemetry_handler<mavlink::MESSAGE_ID::VFR_HUD>(
             &Telemetry::On_vfr_hud, this, Mavlink_demuxer::COMPONENT_ID_ANY);
 
@@ -1233,13 +1310,22 @@ Mavlink_vehicle::Telemetry::On_disable()
 void
 Mavlink_vehicle::Initialize_telemetry()
 {
-    for (mavlink::MAV_DATA_STREAM id : {
+    auto stream_list = {
         mavlink::MAV_DATA_STREAM::MAV_DATA_STREAM_EXTRA1,   // attitude
         mavlink::MAV_DATA_STREAM::MAV_DATA_STREAM_EXTRA2,   // vfr_hud
+        mavlink::MAV_DATA_STREAM::MAV_DATA_STREAM_EXTRA3,   // vibrations
         mavlink::MAV_DATA_STREAM::MAV_DATA_STREAM_POSITION, // gps
         mavlink::MAV_DATA_STREAM::MAV_DATA_STREAM_EXTENDED_STATUS, // gps fix & sysstatus
         mavlink::MAV_DATA_STREAM::MAV_DATA_STREAM_RC_CHANNELS  // output pwm
-        }) {
+    };
+
+    if (is_telemetry_in_dance_mode) {
+        stream_list = {
+            mavlink::MAV_DATA_STREAM::MAV_DATA_STREAM_POSITION
+        };
+    }
+
+    for (mavlink::MAV_DATA_STREAM id : stream_list ) {
         mavlink::Pld_request_data_stream msg;
         msg->target_system = real_system_id;
         msg->target_component = real_component_id;
@@ -1355,23 +1441,13 @@ Mavlink_vehicle::Telemetry::On_sys_status(
 
     // ArDrone and ArduPlane always report 0 in onboard_control_sensors_health field,
     // So, set this only for arducopter.
-    if (vehicle.Get_autopilot_type() == "ardupilot") {
-        // TODO: move to built in enum
-        switch (vehicle.Get_mav_type()) {
-        case mavlink::MAV_TYPE::MAV_TYPE_QUADROTOR:
-        case mavlink::MAV_TYPE::MAV_TYPE_HEXAROTOR:
-        case mavlink::MAV_TYPE::MAV_TYPE_OCTOROTOR:
-        case mavlink::MAV_TYPE::MAV_TYPE_TRICOPTER:
-        case mavlink::MAV_TYPE::MAV_TYPE_HELICOPTER:
-        case mavlink::MAV_TYPE::MAV_TYPE_COAXIAL:
+    if (vehicle.Get_vendor() == Vendor::ARDUPILOT) {
+        if (vehicle.Is_copter()) {
             if (message->payload->onboard_control_sensors_health & mavlink::MAV_SYS_STATUS_SENSOR_RC_RECEIVER) {
                 vehicle.t_rc_link_quality->Set_value(1);
             } else {
                 vehicle.t_rc_link_quality->Set_value(0);
             }
-            break;
-        default:
-            break;
         }
     }
 
@@ -1452,7 +1528,12 @@ Mavlink_vehicle::Telemetry::On_global_position_int(
 
     vehicle.t_latitude->Set_value(static_cast<double>(message->payload->lat) / 1e7 / 180.0 * M_PI);
     vehicle.t_longitude->Set_value(static_cast<double>(message->payload->lon) / 1e7 / 180.0 * M_PI);
-    vehicle.t_altitude_amsl->Set_value(static_cast<double>(message->payload->alt) / 1000.0);
+
+    if (message->payload->lat.Get() || message->payload->lon.Get()) {
+        vehicle.t_altitude_amsl->Set_value(static_cast<double>(message->payload->alt) / 1000.0);
+    } else {
+        vehicle.t_altitude_amsl->Set_value_na();
+    }
 
     auto relative_altitude = static_cast<double>(message->payload->relative_alt) / 1000.0;
 
@@ -1466,7 +1547,7 @@ Mavlink_vehicle::Telemetry::On_global_position_int(
 
     auto current_time_since_boot = static_cast<double>(message->payload->time_boot_ms) / 1000.0;
 
-    if (static_cast<mavlink::ugcs::MAV_AUTOPILOT>(vehicle.Get_autopilot()) == mavlink::ugcs::MAV_AUTOPILOT_AR_DRONE) {
+    if (vehicle.Get_vendor() == Vendor::ARDRONE) {
         // ArDrone reports time in microseconds, not milliseconds.
         current_time_since_boot /= 1000.0;
         // ArDrone reports horizontal speed always as 0.
@@ -1488,6 +1569,10 @@ Mavlink_vehicle::Telemetry::On_global_position_int(
     if (current_time_since_boot > prev_time_since_boot) {
         vehicle.t_vertical_speed->Set_value(
             (relative_altitude - prev_altitude) / (current_time_since_boot - prev_time_since_boot));
+    } else if (current_time_since_boot < (prev_time_since_boot - VEHICLE_RESET_TIME_DIFFERENCE)) {
+        VEHICLE_LOG_WRN(vehicle, "Vehicle rebooted, reconnecting.");
+        vehicle.mav_stream->Get_stream()->Close();
+        return;
     }
     prev_time_since_boot = current_time_since_boot;
     prev_altitude = relative_altitude;
@@ -1498,6 +1583,12 @@ void
 Mavlink_vehicle::Telemetry::On_attitude(
         mavlink::Message<mavlink::MESSAGE_ID::ATTITUDE>::Ptr message)
 {
+    float current_time_since_boot = message->payload->time_boot_ms;
+    if (current_time_since_boot / 1000.0 < (prev_time_since_boot - VEHICLE_RESET_TIME_DIFFERENCE)) {
+        VEHICLE_LOG_WRN(vehicle, "Vehicle rebooted, reconnecting.");
+        vehicle.mav_stream->Get_stream()->Close();
+        return;
+    }
     telemetry_messages_last++;
     telemetry_alive = true;
 
@@ -1524,6 +1615,19 @@ Mavlink_vehicle::Telemetry::On_mission_current(
     } else {
         vehicle.t_current_command->Set_value_na();
     }
+    vehicle.Commit_to_ucs();
+}
+
+void Mavlink_vehicle::Telemetry::On_vibration(
+        mavlink::Message<mavlink::MESSAGE_ID::VIBRATION>::Ptr message) {
+
+    telemetry_messages_last++;
+    telemetry_alive = true;
+
+    vehicle.t_vibration_x->Set_value(message->payload->vibration_x.Get());
+    vehicle.t_vibration_y->Set_value(message->payload->vibration_y.Get());
+    vehicle.t_vibration_z->Set_value(message->payload->vibration_z.Get());
+
     vehicle.Commit_to_ucs();
 }
 
@@ -1801,6 +1905,9 @@ Mavlink_vehicle::Mission_upload::On_mission_request(
     } else {
         attempts_action_left = try_count;
         current_action++;
+        if (item_handler) {
+            item_handler(message->payload->seq);
+        }
     }
 
     if (current_action + 1 == static_cast<ssize_t>(mission_items.size()) && !final_ack_waiting) {
@@ -1939,4 +2046,30 @@ Mavlink_vehicle::Mavlink_route::Get_item_ref(int idx)
     } else {
         return &i->second;
     }
+}
+
+bool
+Mavlink_vehicle::Is_vehicle_heartbeat_valid(
+    ugcs::vsm::mavlink::Message<ugcs::vsm::mavlink::MESSAGE_ID::HEARTBEAT>::Ptr message)
+{
+    // Ignore HB from non-vehicles.
+    if (    message->payload->type == mavlink::MAV_TYPE_GCS
+        ||  message->payload->type == mavlink::MAV_TYPE_GIMBAL
+        ||  message->payload->type == mavlink::MAV_TYPE_ANTENNA_TRACKER
+        ||  message->payload->type == mavlink::MAV_TYPE_ADSB) {
+        return false;
+    }
+
+    // Ignore HB from components other than autopilots.
+    if (message->Get_sender_component_id() != mavlink::MAV_COMP_ID_AUTOPILOT1) {
+        return false;
+    }
+
+    // Ignore HB from generic autopilot with generic frame
+    if (    message->payload->autopilot.Get() == mavlink::MAV_AUTOPILOT_GENERIC
+        &&  message->payload->type == mavlink::MAV_TYPE_GENERIC) {
+        return false;
+    }
+
+    return true;
 }

@@ -1,4 +1,4 @@
-// Copyright (c) 2017, Smart Projects Holdings Ltd
+// Copyright (c) 2018, Smart Projects Holdings Ltd
 // All rights reserved.
 // See LICENSE file for license details.
 
@@ -35,9 +35,8 @@ protected:
             ugcs::vsm::Io_stream::Ref stream,
             ugcs::vsm::Socket_address::Ptr peer_addr,
             ugcs::vsm::Optional<std::string> mission_dump_path,
-            std::string serial_number,
-            std::string model_name,
-            bool id_overridden = false) = 0;
+            const std::string& serial_number,
+            const std::string& model_name) = 0;
 
     /** Subclass should override this method to register On_new_connection
      * methods to the transport detector.
@@ -57,7 +56,6 @@ protected:
             ugcs::vsm::Socket_address::Ptr,
             ugcs::vsm::Io_stream::Ref,
             ugcs::vsm::mavlink::MAV_AUTOPILOT autopilot_type,
-            bool detect_frame = false,
             ugcs::vsm::Optional<std::string> custom_model_name =
                     ugcs::vsm::Optional<std::string>(),
             ugcs::vsm::Optional<std::string> custom_serial_number =
@@ -128,10 +126,6 @@ private:
     /** Handler for the event of protocol transition to OPERATIONAL state. */
     typedef ugcs::vsm::Callback_proxy<void> Ready_handler;
 
-    /** Detector tries to detect frame 3 times.
-     * If that fails it defaults to whatever is in the HEARTBEAT message.*/
-    static const unsigned int FRAME_DETECTION_RETRIES = 3;
-
     /** Preconfigured serial numbers and model names:
      * system id maps to [model name, serial number]. */
     std::unordered_map<int, std::pair<std::string, std::string> > preconfigured;
@@ -145,13 +139,11 @@ private:
 
         Detector_ctx(
                 int timeout,
-                bool detect_frame,
                 ugcs::vsm::Socket_address::Ptr peer_addr,
                 ugcs::vsm::Optional<std::string> custom_model,
                 ugcs::vsm::Optional<std::string> custom_serial,
                 ugcs::vsm::mavlink::MAV_AUTOPILOT autopilot_type):
             timeout(timeout),
-            frame_detection_retries(detect_frame?FRAME_DETECTION_RETRIES:0),
             custom_model(custom_model),
             custom_serial(custom_serial),
             peer_addr(peer_addr),
@@ -166,7 +158,6 @@ private:
         /** Timeout counter. */
         int timeout;
 
-        unsigned int frame_detection_retries;
         ugcs::vsm::mavlink::MAV_TYPE frame_type = ugcs::vsm::mavlink::MAV_TYPE_GENERIC;
 
         ugcs::vsm::Optional<std::string> custom_model;

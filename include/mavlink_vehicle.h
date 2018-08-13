@@ -1,4 +1,4 @@
-// Copyright (c) 2017, Smart Projects Holdings Ltd
+// Copyright (c) 2018, Smart Projects Holdings Ltd
 // All rights reserved.
 // See LICENSE file for license details.
 
@@ -22,23 +22,34 @@ class Mavlink_vehicle: public ugcs::vsm::Vehicle
 {
     DEFINE_COMMON_CLASS(Mavlink_vehicle, ugcs::vsm::Vehicle)
 public:
+    // Built in vendors.
+    enum class Vendor {
+        CUSTOM = 0,     // Use this when creating mavlink vehicle not in the list.
+        EMULATOR = 1,
+        ARDUPILOT = 2,
+        PX4 = 3,
+        ARDRONE = 4
+    };
+
     template<typename... Args>
     Mavlink_vehicle(
         ugcs::vsm::Mavlink_demuxer::System_id system_id,
         ugcs::vsm::Mavlink_demuxer::Component_id component_id,
+        Vendor vendor,
         ugcs::vsm::mavlink::MAV_TYPE type,
-        ugcs::vsm::mavlink::MAV_AUTOPILOT autopilot,
-        const ugcs::vsm::Vehicle::Capabilities& capabilities,
         ugcs::vsm::Io_stream::Ref stream,
         ugcs::vsm::Optional<std::string> mission_dump_path,
+        const std::string& serial,
+        const std::string& model,
         Args &&... args) :
             ugcs::vsm::Vehicle(
-                type, autopilot, capabilities,
                 std::forward<Args>(args)...),
                 real_system_id(system_id),
                 real_component_id(component_id),
                 mission_dump_path(mission_dump_path),
                 mav_stream(ugcs::vsm::Mavlink_stream::Create(stream)),
+            mav_type(type),
+            vehicle_vendor(vendor),
             heartbeat(*this),
             statistics(*this),
             read_parameters(*this),
@@ -50,16 +61,78 @@ public:
             telemetry(*this),
             mission_upload(*this)
     {
-        port_name = stream->Get_name();
+        Set_port_name(stream->Get_name());
+        Set_serial_number(serial);
+        Set_model_name(model);
 
-        t_servo_pwm_1 = Add_telemetry(subsystems.fc, "servo_pwm_1", ugcs::vsm::proto::FIELD_SEMANTIC_NUMERIC);
-        t_servo_pwm_2 = Add_telemetry(subsystems.fc, "servo_pwm_2", ugcs::vsm::proto::FIELD_SEMANTIC_NUMERIC);
-        t_servo_pwm_3 = Add_telemetry(subsystems.fc, "servo_pwm_3", ugcs::vsm::proto::FIELD_SEMANTIC_NUMERIC);
-        t_servo_pwm_4 = Add_telemetry(subsystems.fc, "servo_pwm_4", ugcs::vsm::proto::FIELD_SEMANTIC_NUMERIC);
-        t_servo_pwm_5 = Add_telemetry(subsystems.fc, "servo_pwm_5", ugcs::vsm::proto::FIELD_SEMANTIC_NUMERIC);
-        t_servo_pwm_6 = Add_telemetry(subsystems.fc, "servo_pwm_6", ugcs::vsm::proto::FIELD_SEMANTIC_NUMERIC);
-        t_servo_pwm_7 = Add_telemetry(subsystems.fc, "servo_pwm_7", ugcs::vsm::proto::FIELD_SEMANTIC_NUMERIC);
-        t_servo_pwm_8 = Add_telemetry(subsystems.fc, "servo_pwm_8", ugcs::vsm::proto::FIELD_SEMANTIC_NUMERIC);
+        // Deduct vehicle type and frame type from MAV_TYPE.
+        switch (type) {
+        case ugcs::vsm::mavlink::MAV_TYPE_HEXAROTOR:
+            Set_frame_type("generic_hexa_x");
+            Set_vehicle_type(ugcs::vsm::proto::VEHICLE_TYPE_MULTICOPTER);
+            break;
+        case ugcs::vsm::mavlink::MAV_TYPE_OCTOROTOR:
+            Set_frame_type("generic_octa_v");
+            Set_vehicle_type(ugcs::vsm::proto::VEHICLE_TYPE_MULTICOPTER);
+            break;
+        case ugcs::vsm::mavlink::MAV_TYPE_QUADROTOR:
+            Set_frame_type("generic_quad_x");
+            Set_vehicle_type(ugcs::vsm::proto::VEHICLE_TYPE_MULTICOPTER);
+            break;
+        case ugcs::vsm::mavlink::MAV_TYPE_TRICOPTER:
+            Set_frame_type("generic_tri_y");
+            Set_vehicle_type(ugcs::vsm::proto::VEHICLE_TYPE_MULTICOPTER);
+            break;
+        case ugcs::vsm::mavlink::MAV_TYPE_HELICOPTER:
+        case ugcs::vsm::mavlink::MAV_TYPE_COAXIAL:
+            Set_frame_type("generic_heli");
+            Set_vehicle_type(ugcs::vsm::proto::VEHICLE_TYPE_HELICOPTER);
+            break;
+        case ugcs::vsm::mavlink::MAV_TYPE_FIXED_WING:
+        case ugcs::vsm::mavlink::MAV_TYPE_AIRSHIP:
+            Set_frame_type("generic_fixed_wing");
+            Set_vehicle_type(ugcs::vsm::proto::VEHICLE_TYPE_FIXED_WING);
+            break;
+        case ugcs::vsm::mavlink::MAV_TYPE_GROUND_ROVER:
+            Set_vehicle_type(ugcs::vsm::proto::VEHICLE_TYPE_GROUND);
+            break;
+        case ugcs::vsm::mavlink::MAV_TYPE_VTOL_DUOROTOR:
+            Set_frame_type("generic_vtol_duo");
+            Set_vehicle_type(ugcs::vsm::proto::VEHICLE_TYPE_VTOL);
+            break;
+        case ugcs::vsm::mavlink::MAV_TYPE_VTOL_QUADROTOR:
+            Set_frame_type("generic_vtol_quad");
+            Set_vehicle_type(ugcs::vsm::proto::VEHICLE_TYPE_VTOL);
+            break;
+        case ugcs::vsm::mavlink::MAV_TYPE_VTOL_TILTROTOR:
+            Set_frame_type("generic_tilt_rotor");
+            Set_vehicle_type(ugcs::vsm::proto::VEHICLE_TYPE_VTOL);
+            break;
+        case ugcs::vsm::mavlink::MAV_TYPE_VTOL_RESERVED2:
+        case ugcs::vsm::mavlink::MAV_TYPE_VTOL_RESERVED3:
+        case ugcs::vsm::mavlink::MAV_TYPE_VTOL_RESERVED4:
+        case ugcs::vsm::mavlink::MAV_TYPE_VTOL_RESERVED5:
+            Set_frame_type("generic_vtol");
+            Set_vehicle_type(ugcs::vsm::proto::VEHICLE_TYPE_VTOL);
+            break;
+        default:
+            LOG_INFO("Could not deduct vehicle type and frame from mav_type: %d", type);
+        }
+
+        VEHICLE_LOG_WRN(*this, "New mavlink Vehicle type=%d, default frame=%s", Get_vehicle_type(), Get_frame_type().c_str());
+
+        t_servo_pwm_1 = flight_controller->Add_telemetry("servo_pwm_1", ugcs::vsm::proto::FIELD_SEMANTIC_NUMERIC);
+        t_servo_pwm_2 = flight_controller->Add_telemetry("servo_pwm_2", ugcs::vsm::proto::FIELD_SEMANTIC_NUMERIC);
+        t_servo_pwm_3 = flight_controller->Add_telemetry("servo_pwm_3", ugcs::vsm::proto::FIELD_SEMANTIC_NUMERIC);
+        t_servo_pwm_4 = flight_controller->Add_telemetry("servo_pwm_4", ugcs::vsm::proto::FIELD_SEMANTIC_NUMERIC);
+        t_servo_pwm_5 = flight_controller->Add_telemetry("servo_pwm_5", ugcs::vsm::proto::FIELD_SEMANTIC_NUMERIC);
+        t_servo_pwm_6 = flight_controller->Add_telemetry("servo_pwm_6", ugcs::vsm::proto::FIELD_SEMANTIC_NUMERIC);
+        t_servo_pwm_7 = flight_controller->Add_telemetry("servo_pwm_7", ugcs::vsm::proto::FIELD_SEMANTIC_NUMERIC);
+        t_servo_pwm_8 = flight_controller->Add_telemetry("servo_pwm_8", ugcs::vsm::proto::FIELD_SEMANTIC_NUMERIC);
+
+        t_vibration_x = flight_controller->Add_telemetry("vibration_x", ugcs::vsm::proto::FIELD_SEMANTIC_NUMERIC);
+        t_vibration_y = flight_controller->Add_telemetry("vibration_y", ugcs::vsm::proto::FIELD_SEMANTIC_NUMERIC);
+        t_vibration_z = flight_controller->Add_telemetry("vibration_z", ugcs::vsm::proto::FIELD_SEMANTIC_NUMERIC);
     }
 
     /** System ID of a VSM itself. Thats is the value seen by vehicle. Value
@@ -83,6 +156,11 @@ public:
         uint8_t sys,
         uint8_t cmp,
         ugcs::vsm::Io_buffer::Ptr buf);
+
+    // Return true if heartbeat is vrom vehicle.
+    // Return false if heartbeat is from gimbal, GCS, etc...
+    static bool
+    Is_vehicle_heartbeat_valid(ugcs::vsm::mavlink::Message<ugcs::vsm::mavlink::MESSAGE_ID::HEARTBEAT>::Ptr message);
 
 protected:
     void
@@ -155,6 +233,10 @@ protected:
     /** Get the type of Mavlink vehicle. */
     ugcs::vsm::mavlink::MAV_TYPE
     Get_mav_type() const;
+
+    /** Get the vendor of vehicle */
+    Vendor
+    Get_vendor() const;
 
     /** Read handler for the data recieved from the vehicle. */
     void
@@ -237,6 +319,12 @@ protected:
     /** Mavlink streams towards the vehicle. */
     ugcs::vsm::Mavlink_stream::Ptr mav_stream;
 
+    // Frame type from heartbeat.
+    ugcs::vsm::mavlink::MAV_TYPE mav_type;
+
+    // Vendors have some differences of mavlink implementation. Use this to handle them.
+    Vendor vehicle_vendor;
+
     /** Current Mavlink read operation. */
     ugcs::vsm::Operation_waiter read_op;
 
@@ -250,10 +338,17 @@ protected:
 
     uint8_t telemetry_rate_hz = DEFAULT_TELEMETRY_RATE;
 
+    bool is_telemetry_in_dance_mode = false;
+
     /** Number of telemetry message types we are expecting to receive per second. */
     float expected_telemetry_rate = 0;
 
     ugcs::vsm::Vehicle::Command_map current_command_map;
+
+    // Seconds allowed for time since boot to differ before reconnecting the vehicle.
+    // If time_boot_ms difference between two consecutive GLOBAL_POSITION_INT messages
+    // is more than this then consider that vehicle should be recreated.
+    static constexpr float VEHICLE_RESET_TIME_DIFFERENCE = 2.0;
 
     bool
     Is_armed() {
@@ -724,10 +819,43 @@ protected:
     /** Write parameters to the vehicle. */
     class Write_parameters: public Activity {
     public:
-        using Activity::Activity;
+        Write_parameters(Mavlink_vehicle& vehicle):
+            Activity(vehicle),
+            parameters(vehicle.real_system_id, vehicle.real_component_id)
+        {}
 
         /** List of parameters. */
-        typedef std::vector<ugcs::vsm::mavlink::Pld_param_set> List;
+        typedef class _List : public std::vector<ugcs::vsm::mavlink::Pld_param_set> {
+        public:
+            _List(ugcs::vsm::Mavlink_demuxer::System_id, ugcs::vsm::Mavlink_demuxer::Component_id);
+
+            // Create PARAM_SET command for MAV_PARAM_TYPE_REAL32 type
+            void
+            Append_float(const std::string& name, float value);
+
+            // Create PARAM_SET command for int32 type.
+            // This does a static_cast so that integer value converted to float field of PARAM_SET.
+            // Used for Ardupilot.
+            void
+            Append_int_ardu(
+                const std::string& name,
+                int32_t value,
+                ugcs::vsm::mavlink::MAV_PARAM_TYPE type = ugcs::vsm::mavlink::MAV_PARAM_TYPE_INT32);
+
+            // Create PARAM_SET command for int32 type
+            // This does a reinterpret cast so that integer value is
+            // put into float field of PARAM_SET unconverted.
+            // Used for PX4.
+            void
+            Append_int_px4(
+                const std::string& name,
+                int32_t value,
+                ugcs::vsm::mavlink::MAV_PARAM_TYPE type = ugcs::vsm::mavlink::MAV_PARAM_TYPE_INT32);
+
+        private:
+            ugcs::vsm::Mavlink_demuxer::System_id sysid;
+            ugcs::vsm::Mavlink_demuxer::Component_id compid;
+        } List;
 
         /** Start parameters writing. */
         void
@@ -753,7 +881,7 @@ protected:
         ugcs::vsm::Timer_processor::Timer::Ptr timer;
 
         /** Number of write attempts left. */
-        size_t attempts_left;
+        size_t attempts_left = 0;
 
         /** Parameters to write. */
         List parameters;
@@ -913,6 +1041,9 @@ protected:
         On_vfr_hud(ugcs::vsm::mavlink::Message<ugcs::vsm::mavlink::MESSAGE_ID::VFR_HUD>::Ptr);
 
         void
+        On_vibration(ugcs::vsm::mavlink::Message<ugcs::vsm::mavlink::MESSAGE_ID::VIBRATION>::Ptr);
+
+        void
         On_gps_raw(ugcs::vsm::mavlink::Message<ugcs::vsm::mavlink::MESSAGE_ID::GPS_RAW_INT>::Ptr);
 
         void
@@ -979,6 +1110,16 @@ protected:
     public:
         using Activity::Activity;
 
+        /** Handler for status text. */
+        typedef ugcs::vsm::Callback_proxy<void, int>
+            Mission_request_handler;
+
+        /** Convenience builder. */
+        DEFINE_CALLBACK_BUILDER(
+                Make_mission_request_handler,
+                (int),
+                (0));
+
         /** return true if mission upload is active. */
         bool
         Is_active();
@@ -1033,6 +1174,8 @@ protected:
         /** true when handler for the final ack is registered. */
         bool final_ack_waiting = false;
 
+        Mission_request_handler item_handler;
+
         /** Retry timer. */
         ugcs::vsm::Timer_processor::Timer::Ptr timer;
     } mission_upload;
@@ -1076,6 +1219,7 @@ protected:
     friend class Emulator_vehicle;
     friend class Ardrone_vehicle;
     friend class Px4_vehicle;
+    friend class Airmast_vehicle;
 
 private:
     void

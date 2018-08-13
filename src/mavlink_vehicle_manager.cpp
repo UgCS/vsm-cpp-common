@@ -1,4 +1,4 @@
-// Copyright (c) 2017, Smart Projects Holdings Ltd
+// Copyright (c) 2018, Smart Projects Holdings Ltd
 // All rights reserved.
 // See LICENSE file for license details.
 
@@ -135,10 +135,11 @@ Mavlink_vehicle_manager::On_param_value(
     if (message->payload->param_id.Get_string() == "FRAME") {
         auto det_iter = detectors.find(mav_stream);
         if (det_iter != detectors.end() && message->payload->param_value == 2.0) {
-            det_iter->second.frame_type =
-                    static_cast<mavlink::MAV_TYPE>(mavlink::ugcs::MAV_TYPE::MAV_TYPE_IRIS);
+            // TODO: Move this to ardupilot vsm.
+//            det_iter->second.frame_type =
+//                    static_cast<mavlink::MAV_TYPE>(mavlink::ugcs::MAV_TYPE::MAV_TYPE_IRIS);
             // It will create vehicle on first healthy HB.
-            det_iter->second.frame_detection_retries = 0;
+//            det_iter->second.frame_detection_retries = 0;
         }
     }
 }
@@ -156,18 +157,16 @@ Mavlink_vehicle_manager::Create_vehicle_wrapper(
     auto it = vehicles.find(system_id);
     ugcs::vsm::Socket_address::Ptr peer_addr = nullptr;
 
-    if (it == vehicles.end()) {
-        auto preconf = preconfigured.find(system_id);
-        if (preconf != preconfigured.end()) {
-            model_name = preconf->second.first;
-            serial_number = preconf->second.second;
-            is_preconfigured = true;
-        } else {
-            serial_number = std::to_string(system_id);
-            model_name = default_model_name;
-        }
-        it = vehicles.emplace(system_id, Vehicle_ctx()).first;
+    auto preconf = preconfigured.find(system_id);
+    if (preconf != preconfigured.end()) {
+        model_name = preconf->second.first;
+        serial_number = preconf->second.second;
+        is_preconfigured = true;
+    } else {
+        serial_number = std::to_string(system_id);
+        model_name = default_model_name;
     }
+    it = vehicles.emplace(system_id, Vehicle_ctx()).first;
 
     auto det_iter = detectors.find(mav_stream);
     ugcs::vsm::Optional<std::string> custom_model_name;
@@ -187,24 +186,13 @@ Mavlink_vehicle_manager::Create_vehicle_wrapper(
     }
     /* Note the vehicle reference! */
     auto& vehicle = ctx.vehicle;
-    if (vehicle) {
-        model_name = vehicle->Get_model_name();
-        serial_number = vehicle->Get_serial_number();
-        if (!ctx.stream->Is_closed()) {
-            LOG_WARNING("Vehicle [%s:%s] Mavlink id %d is reachable via different link.",
-                    model_name.c_str(),
-                    serial_number.c_str(),
-                    system_id);
-            ctx.stream->Close();
-        }
-        vehicle->Disable();
-    }
 
-    LOG_INFO("Creating vehicle: [%s:%s] Mavlink ID: %d, Type: %d",
+    LOG_INFO("Creating vehicle: [%s:%s] Mavlink ID: %d, Type: %d on %s",
             model_name.c_str(),
             serial_number.c_str(),
             system_id,
-            frame_type);
+            frame_type,
+            mav_stream->Get_stream()->Get_name().c_str());
 
     vehicle = Create_mavlink_vehicle(
             system_id,
@@ -214,10 +202,12 @@ Mavlink_vehicle_manager::Create_vehicle_wrapper(
             peer_addr,
             mission_dump_path,
             serial_number,
-            model_name,
-            is_preconfigured);
+            model_name);
 
     vehicle->Enable();
+
+    // Registration must be done explicitly by each vehicle.
+
     /* Keep the stream to see when it will be closed to delete the vehicle. */
     ctx.stream = mav_stream->Get_stream();
 
@@ -234,8 +224,7 @@ Mavlink_vehicle_manager::On_heartbeat(
     mavlink::Message<mavlink::MESSAGE_ID::HEARTBEAT>::Ptr message,
     ugcs::vsm::Mavlink_stream::Ptr mav_stream)
 {
-    // Ignore heartbeats of type GCS. Sent by Ardupilot 3.3.1 SITL.
-    if (message->payload->type == mavlink::MAV_TYPE_GCS) {
+    if (!Mavlink_vehicle::Is_vehicle_heartbeat_valid(message)) {
         return;
     }
 
@@ -251,43 +240,33 @@ Mavlink_vehicle_manager::On_heartbeat(
 
     auto det_iter = detectors.find(mav_stream);
     if (det_iter != detectors.end()) {
+        auto stream = mav_stream->Get_stream();
         if (message->payload->autopilot != det_iter->second.autopilot_type) {
             LOG("Failed detection expect %d, received %d.",
                 static_cast<int>(det_iter->second.autopilot_type),
                 static_cast<int>(message->payload->autopilot));
-            auto stream = mav_stream->Get_stream();
             mav_stream->Disable();
             detectors.erase(det_iter);
             /* Signal transport_detector that this is not our protocol. */
             Transport_detector::Get_instance()->Protocol_not_detected(stream);
         } else {
-            // Set frame only if it is not set already (by iris frame detector)
-            if (det_iter->second.frame_type == ugcs::vsm::mavlink::MAV_TYPE_GENERIC) {
-                det_iter->second.frame_type = static_cast<mavlink::MAV_TYPE>(message->payload->type.Get());
-            }
-            if (det_iter->second.frame_detection_retries) {
-                // Try frame detection only once.
-                det_iter->second.frame_detection_retries--;
-
-                mavlink::Pld_param_request_read payload;
-                payload->target_component = component_id;
-                payload->target_system = system_id;
-                payload->param_id = "FRAME";
-                payload->param_index = -1;
-
-                mav_stream->Send_message(
-                        payload,
-                        Mavlink_vehicle::VSM_SYSTEM_ID,
-                        Mavlink_vehicle::VSM_COMPONENT_ID,
-                        Mavlink_vehicle::WRITE_TIMEOUT,
-                        Make_timeout_callback(
-                                &Mavlink_vehicle_manager::Write_to_vehicle_timed_out, this, mav_stream),
-                                Get_worker());
-            } else {
+            auto it = vehicles.find(system_id);
+            if (it == vehicles.end()) {
+                // Set frame only if it is not set already (by iris frame detector)
+                if (det_iter->second.frame_type == ugcs::vsm::mavlink::MAV_TYPE_GENERIC) {
+                    det_iter->second.frame_type = static_cast<mavlink::MAV_TYPE>(message->payload->type.Get());
+                }
                 Create_vehicle_wrapper(
                         mav_stream,
                         system_id,
                         component_id);
+            } else {
+                LOG_WARNING("Existing vehicle with mavlink id %d is reachable via different link: %s.",
+                    system_id,
+                    stream->Get_name().c_str());
+                // Restart detection if vehicle is already connected.
+                // This allows automatic reconnect on this link when current vehicle times out.
+                det_iter->second.timeout = DETECTOR_TIMEOUT / TIMER_INTERVAL;
             }
         }
     }
@@ -341,18 +320,12 @@ Mavlink_vehicle_manager::Schedule_next_read(ugcs::vsm::Mavlink_stream::Ptr mav_s
     if (stream) {
         /* Mavlink stream still belongs to manager, so continue reading. */
         size_t to_read = mav_stream->Get_decoder().Get_next_read_size();
-        size_t max_read;
-        if (stream->Get_type() == Io_stream::Type::UDP) {
-            max_read = ugcs::vsm::MIN_UDP_PAYLOAD_SIZE_TO_READ;
-        } else {
-            max_read = to_read;
-        }
         auto iter = detectors.find(mav_stream);
         ASSERT(iter != detectors.end());
         Detector_ctx& ctx = iter->second;
         ctx.read_op.Abort();
         ctx.read_op = stream->Read(
-                max_read,
+                0,
                 to_read,
                 Make_read_callback(
                         &Mavlink_vehicle_manager::On_stream_read,
@@ -445,7 +418,6 @@ Mavlink_vehicle_manager::Handle_new_connection(
         ugcs::vsm::Socket_address::Ptr peer_addr,
         ugcs::vsm::Io_stream::Ref stream,
         ugcs::vsm::mavlink::MAV_AUTOPILOT autopilot_type,
-        bool detect_frame,
         ugcs::vsm::Optional<std::string> custom_model_name,
         ugcs::vsm::Optional<std::string> custom_serial_number)
 {
@@ -472,7 +444,6 @@ Mavlink_vehicle_manager::Handle_new_connection(
             std::forward_as_tuple(mav_stream),
             std::forward_as_tuple(
                     DETECTOR_TIMEOUT / TIMER_INTERVAL,
-                    detect_frame,
                     peer_addr,
                     custom_model_name,
                     custom_serial_number,
