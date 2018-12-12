@@ -20,16 +20,31 @@ Mavlink_vehicle_manager::On_enable()
 {
     Request_processor::On_enable();
 
-    worker = ugcs::vsm::Request_worker::Create(
+    manager_worker = ugcs::vsm::Request_worker::Create(
         "Mavlink vehicle manager worker",
         std::initializer_list<ugcs::vsm::Request_container::Ptr>{Shared_from_this()});
 
-    worker->Enable();
+    vehicle_processor = Request_processor::Create("Mavlink vehicle processor");
+
+    vehicle_worker = ugcs::vsm::Request_worker::Create(
+        "Mavlink vehicle worker",
+        std::initializer_list<ugcs::vsm::Request_container::Ptr>{vehicle_processor});
+
+    manager_worker->Enable();
+    vehicle_processor->Enable();
+    vehicle_worker->Enable();
 
     watchdog_timer = Timer_processor::Get_instance()->Create_timer(
             TIMER_INTERVAL,
             Make_callback(&Mavlink_vehicle_manager::On_timer, this),
-            worker);
+            manager_worker);
+
+    Transport_detector::Get_instance()->Add_detector(
+        Transport_detector::Make_connect_handler(
+            &Mavlink_vehicle_manager::Handle_new_injector,
+            Shared_from_this()),
+        Shared_from_this(),
+        "mavlink.injection");
 
     Load_vehicle_config();
 }
@@ -43,11 +58,15 @@ Mavlink_vehicle_manager::On_disable()
                     &Mavlink_vehicle_manager::Process_on_disable,
                     Shared_from_this(),
                     req));
-    worker->Submit_request(req);
+    manager_worker->Submit_request(req);
     req->Wait_done(false);
+
+    vehicle_processor->Disable();
+    vehicle_worker->Disable();
+
     Set_disabled();
-    worker->Disable();
-    worker = nullptr;
+    manager_worker->Disable();
+    manager_worker = nullptr;
 }
 
 void
@@ -55,19 +74,124 @@ Mavlink_vehicle_manager::Process_on_disable(Request::Ptr request)
 {
     On_manager_disable();
 
+    for (auto& i : injection_readers) {
+        i.second.Abort();
+        if (i.first->Get_stream()) {
+            i.first->Get_stream()->Close();
+        }
+        i.first->Disable();
+    }
+    injection_readers.clear();
+
     for (auto& v : vehicles) {
         v.second.vehicle->Disable();
     }
-    for (auto& s : detectors) {
-        s.first->Disable();
+    {
+        std::lock_guard<std::mutex> lock(detector_mutex);
+        for (auto& s : detectors) {
+            s.first->Disable();
+        }
+        detectors.clear();
     }
-    detectors.clear();
     vehicles.clear();
 
     watchdog_timer->Cancel();
     watchdog_timer = nullptr;
 
     request->Complete();
+}
+
+void
+Mavlink_vehicle_manager::Handle_new_injector(
+    std::string, int, Socket_address::Ptr, Io_stream::Ref stream)
+{
+    auto mav_stream = Mavlink_stream::Create(stream);
+    mav_stream->Bind_decoder_demuxer();
+    mav_stream->Get_demuxer().Register_default_handler(
+        Mavlink_demuxer::Make_default_handler(
+                    &Mavlink_vehicle_manager::Default_mavlink_handler,
+                    Shared_from_this()));
+
+    LOG_INFO("MAVlink injection enabled on %s", stream->Get_name().c_str());
+    Schedule_injection_read(mav_stream);
+}
+
+bool
+Mavlink_vehicle_manager::Default_mavlink_handler(
+    Io_buffer::Ptr buf,
+    mavlink::MESSAGE_ID_TYPE message_id,
+    uint8_t sys,
+    uint8_t cmp,
+    uint8_t)
+{
+    int target;
+    switch (message_id) {
+    case mavlink::MESSAGE_ID::COMMAND_LONG:
+        target = mavlink::Message<mavlink::MESSAGE_ID::COMMAND_LONG>::Create(0, 0, 0, buf)->payload->target_system;
+        break;
+    case mavlink::MESSAGE_ID::COMMAND_INT:
+        target = mavlink::Message<mavlink::MESSAGE_ID::COMMAND_INT>::Create(0, 0, 0, buf)->payload->target_system;
+        break;
+    case mavlink::MESSAGE_ID::GPS_INJECT_DATA:
+        target = mavlink::Message<mavlink::MESSAGE_ID::GPS_INJECT_DATA>::Create(0, 0, 0, buf)->payload->target_system;
+        break;
+    case mavlink::MESSAGE_ID::GPS_RTCM_DATA:
+        // Messages which do not have target are broadcasted to all vehicles.
+        target = mavlink::SYSTEM_ID_NONE;
+        break;
+    default:
+        return false;
+    }
+
+    if (target == mavlink::SYSTEM_ID_NONE) {
+        // Messages which do not have target or target is ALL (0) are broadcasted to all vehicles.
+        for (auto it : vehicles) {
+            it.second.vehicle->Inject_message(message_id, sys, cmp, buf);
+        }
+    } else {
+        // If message has target then send to that specific vehicle.
+        auto it = vehicles.find(target);
+        if (it != vehicles.end()) {
+            it->second.vehicle->Inject_message(message_id, sys, cmp, buf);
+        }
+    }
+    return false;
+}
+
+void
+Mavlink_vehicle_manager::Schedule_injection_read(Mavlink_stream::Ptr mav_stream)
+{
+    auto stream = mav_stream->Get_stream();
+    if (stream) {
+        if (manager_worker->Is_enabled()) {
+            size_t to_read = mav_stream->Get_decoder().Get_next_read_size();
+            injection_readers[mav_stream].Abort();
+            injection_readers.emplace(
+                mav_stream,
+                stream->Read(
+                    0,
+                    to_read,
+                    Make_read_callback(
+                        [this](Io_buffer::Ptr buffer, Io_result result, Mavlink_stream::Ptr mav_stream)
+                        {
+                            if (result == Io_result::OK) {
+                                mav_stream->Get_decoder().Decode(buffer);
+                                Schedule_injection_read(mav_stream);
+                            } else {
+                                if (mav_stream->Get_stream()) {
+                                    mav_stream->Get_stream()->Close();
+                                }
+                                mav_stream->Disable();
+                                injection_readers.erase(mav_stream);
+                            }
+                        },
+                        mav_stream),
+                    manager_worker));
+        } else {
+            mav_stream->Disable();
+            stream->Close();
+        }
+    }
 }
 
 void
@@ -101,6 +225,10 @@ Mavlink_vehicle_manager::Load_vehicle_config()
         mission_dump_path = filename;
     }
 
+    if (props->Exists("mavlink.vsm_system_id")) {
+        vsm_system_id = props->Get_int("mavlink.vsm_system_id");
+    }
+
     if (!preconfigured.empty()) {
         LOG_INFO("%zu custom vehicle(-s) configured.", preconfigured.size());
     }
@@ -128,23 +256,6 @@ Mavlink_vehicle_manager::Write_to_vehicle_timed_out(
 }
 
 void
-Mavlink_vehicle_manager::On_param_value(
-    mavlink::Message<mavlink::MESSAGE_ID::PARAM_VALUE>::Ptr message,
-    ugcs::vsm::Mavlink_stream::Ptr mav_stream)
-{
-    if (message->payload->param_id.Get_string() == "FRAME") {
-        auto det_iter = detectors.find(mav_stream);
-        if (det_iter != detectors.end() && message->payload->param_value == 2.0) {
-            // TODO: Move this to ardupilot vsm.
-//            det_iter->second.frame_type =
-//                    static_cast<mavlink::MAV_TYPE>(mavlink::ugcs::MAV_TYPE::MAV_TYPE_IRIS);
-            // It will create vehicle on first healthy HB.
-//            det_iter->second.frame_detection_retries = 0;
-        }
-    }
-}
-
-void
 Mavlink_vehicle_manager::Create_vehicle_wrapper(
     ugcs::vsm::Mavlink_stream::Ptr mav_stream,
     uint8_t system_id,
@@ -154,7 +265,6 @@ Mavlink_vehicle_manager::Create_vehicle_wrapper(
     std::string model_name;
     auto frame_type = mavlink::MAV_TYPE::MAV_TYPE_QUADROTOR;
     bool is_preconfigured = false;
-    auto it = vehicles.find(system_id);
     ugcs::vsm::Socket_address::Ptr peer_addr = nullptr;
 
     auto preconf = preconfigured.find(system_id);
@@ -166,17 +276,20 @@ Mavlink_vehicle_manager::Create_vehicle_wrapper(
         serial_number = std::to_string(system_id);
         model_name = default_model_name;
     }
-    it = vehicles.emplace(system_id, Vehicle_ctx()).first;
+    auto it = vehicles.emplace(system_id, Vehicle_ctx()).first;
 
-    auto det_iter = detectors.find(mav_stream);
     ugcs::vsm::Optional<std::string> custom_model_name;
     ugcs::vsm::Optional<std::string> custom_serial_number;
 
-    if (det_iter != detectors.end()) {
-        custom_model_name = det_iter->second.custom_model;
-        custom_serial_number = det_iter->second.custom_serial;
-        frame_type = det_iter->second.frame_type;
-        peer_addr = det_iter->second.peer_addr;
+    {
+        std::lock_guard<std::mutex> lock(detector_mutex);
+        auto det_iter = detectors.find(mav_stream);
+        if (det_iter != detectors.end()) {
+            custom_model_name = det_iter->second.custom_model;
+            custom_serial_number = det_iter->second.custom_serial;
+            frame_type = det_iter->second.frame_type;
+            peer_addr = det_iter->second.peer_addr;
+        }
     }
 
     auto &ctx = it->second;
@@ -198,11 +311,13 @@ Mavlink_vehicle_manager::Create_vehicle_wrapper(
             system_id,
             component_id,
             frame_type,
-            mav_stream->Get_stream(),
+            mav_stream,
             peer_addr,
             mission_dump_path,
             serial_number,
-            model_name);
+            model_name,
+            vehicle_processor,
+            vehicle_worker);
 
     vehicle->Enable();
 
@@ -210,13 +325,6 @@ Mavlink_vehicle_manager::Create_vehicle_wrapper(
 
     /* Keep the stream to see when it will be closed to delete the vehicle. */
     ctx.stream = mav_stream->Get_stream();
-
-    /* Disable Mavlink stream used by manager, because vehicle now has full
-     * control over it. */
-    mav_stream->Disable();
-
-    /* Mavlink detected, so remove this stream from detectors. */
-    detectors.erase(mav_stream);
 }
 
 void
@@ -238,6 +346,7 @@ Mavlink_vehicle_manager::On_heartbeat(
     auto system_id = message->Get_sender_system_id();
     auto component_id = message->Get_sender_component_id();
 
+    std::unique_lock<std::mutex> lock(detector_mutex);
     auto det_iter = detectors.find(mav_stream);
     if (det_iter != detectors.end()) {
         auto stream = mav_stream->Get_stream();
@@ -245,6 +354,7 @@ Mavlink_vehicle_manager::On_heartbeat(
             LOG("Failed detection expect %d, received %d.",
                 static_cast<int>(det_iter->second.autopilot_type),
                 static_cast<int>(message->payload->autopilot));
+            // This will break setups when ardupilot and px4 are on the same link.
             mav_stream->Disable();
             detectors.erase(det_iter);
             /* Signal transport_detector that this is not our protocol. */
@@ -252,18 +362,18 @@ Mavlink_vehicle_manager::On_heartbeat(
         } else {
             auto it = vehicles.find(system_id);
             if (it == vehicles.end()) {
-                // Set frame only if it is not set already (by iris frame detector)
-                if (det_iter->second.frame_type == ugcs::vsm::mavlink::MAV_TYPE_GENERIC) {
-                    det_iter->second.frame_type = static_cast<mavlink::MAV_TYPE>(message->payload->type.Get());
-                }
+                det_iter->second.frame_type = static_cast<mavlink::MAV_TYPE>(message->payload->type.Get());
+                lock.unlock();
                 Create_vehicle_wrapper(
                         mav_stream,
                         system_id,
                         component_id);
             } else {
-                LOG_WARNING("Existing vehicle with mavlink id %d is reachable via different link: %s.",
-                    system_id,
-                    stream->Get_name().c_str());
+                if (it->second.stream != stream) {
+                    LOG_WARNING("Existing vehicle with mavlink id %d is reachable via different link: %s.",
+                        system_id,
+                        stream->Get_name().c_str());
+                }
                 // Restart detection if vehicle is already connected.
                 // This allows automatic reconnect on this link when current vehicle times out.
                 det_iter->second.timeout = DETECTOR_TIMEOUT / TIMER_INTERVAL;
@@ -277,7 +387,11 @@ Mavlink_vehicle_manager::On_raw_data(
     ugcs::vsm::Io_buffer::Ptr buffer,
     ugcs::vsm::Mavlink_stream::Ptr mav_stream)
 {
+    std::lock_guard<std::mutex> lock(detector_mutex);
     auto iter = detectors.find(mav_stream);
+    if (iter == detectors.end()) {
+        return;
+    }
     auto& ctx = iter->second;
     auto str = buffer->Get_string();
     for (auto c : str) {
@@ -300,6 +414,11 @@ Mavlink_vehicle_manager::Handle_raw_line(
     Detector_ctx& ctx,
     const ugcs::vsm::Mavlink_stream::Ptr& mav_stream)
 {
+    if (mav_stream->Get_decoder().Get_common_stats().handled) {
+        // We do not need this any more if at least one mavlink message is received.
+        mav_stream->Get_decoder().Register_raw_data_handler(
+            ugcs::vsm::Mavlink_stream::Decoder::Raw_data_handler());
+    }
     for (auto& re : extension_patterns) {
         regex::smatch smatch;
         if (regex::regex_search(ctx.curr_line, smatch, re)) {
@@ -320,8 +439,11 @@ Mavlink_vehicle_manager::Schedule_next_read(ugcs::vsm::Mavlink_stream::Ptr mav_s
     if (stream) {
         /* Mavlink stream still belongs to manager, so continue reading. */
         size_t to_read = mav_stream->Get_decoder().Get_next_read_size();
+        std::lock_guard<std::mutex> lock(detector_mutex);
         auto iter = detectors.find(mav_stream);
-        ASSERT(iter != detectors.end());
+        if (iter == detectors.end()) {
+            return;
+        }
         Detector_ctx& ctx = iter->second;
         ctx.read_op.Abort();
         ctx.read_op = stream->Read(
@@ -331,7 +453,7 @@ Mavlink_vehicle_manager::Schedule_next_read(ugcs::vsm::Mavlink_stream::Ptr mav_s
                         &Mavlink_vehicle_manager::On_stream_read,
                         Shared_from_this(),
                         mav_stream),
-                        worker);
+                        vehicle_worker);
     }
 }
 
@@ -349,16 +471,8 @@ Mavlink_vehicle_manager::On_stream_read(
         } else {
             /* Stream error during detection. */
             mav_stream->Get_stream()->Close();
-            detectors.erase(mav_stream);
-            mav_stream->Disable();
         }
     }
-}
-
-Request_worker::Ptr
-Mavlink_vehicle_manager::Get_worker()
-{
-    return worker;
 }
 
 void
@@ -369,10 +483,21 @@ Mavlink_vehicle_manager::On_manager_disable()
 bool
 Mavlink_vehicle_manager::On_timer()
 {
+    for (auto iter = vehicles.begin(); iter != vehicles.end(); ) {
+        auto v = iter->second.vehicle;
+        if (!v->is_active || iter->second.stream->Is_closed()) {
+            v->Disable();
+            iter = vehicles.erase(iter);
+        } else {
+            iter++;
+        }
+    }
+
+    std::lock_guard<std::mutex> lock(detector_mutex);
     for (auto iter = detectors.begin(); iter != detectors.end(); ) {
         auto mav_stream = iter->first;
         auto &ctx = iter->second;
-        auto &stats = mav_stream->Get_decoder().Get_stats();
+        auto &stats = mav_stream->Get_decoder().Get_common_stats();
 
         /* Decrement timer to catch timeout */
         ctx.timeout--;
@@ -381,32 +506,18 @@ Mavlink_vehicle_manager::On_timer()
          * Timeout occurred
          */
         if (    (   stats.bytes_received > MAX_UNDETECTED_BYTES
-                &&  stats.bad_checksum == 0
-                &&  stats.bad_length == 0
                 &&  stats.handled == 0
                 &&  stats.no_handler == 0)
             ||  ctx.timeout == 0) {
             auto stream = mav_stream->Get_stream();
-            /* Signal transport_detector that this is not our protocol. */
-            LOG_INFO("Mavlink not detected on stream [%s].", stream->Get_name().c_str());
-            mav_stream->Disable();
+            if (stream && !stream->Is_closed()) {
+                LOG_INFO("Mavlink not detected on stream [%s].", stream->Get_name().c_str());
+                stream->Close();
+            }
             iter = detectors.erase(iter);
-            Transport_detector::Get_instance()->Protocol_not_detected(stream);
-            continue;
-        }
-        iter++;
-    }
-
-    for (auto iter = vehicles.begin(); iter != vehicles.end(); ) {
-        auto stream = iter->second.stream;
-        if (!stream->Is_closed()) {
-            /* Vehicle still alive. */
+        } else {
             iter++;
-            continue;
         }
-        /* Cleanup dead vehicle. */
-        iter->second.vehicle->Disable();
-        iter = vehicles.erase(iter);
     }
     return true;
 }
@@ -425,29 +536,34 @@ Mavlink_vehicle_manager::Handle_new_connection(
     mav_stream->Bind_decoder_demuxer();
 
     LOG_INFO("New connection [%s:%d].", name.c_str(), baud);
+
+    // Register HB handler which is going to get processed in manager_thread.
+    // This means that each HB is processed twice: in vehicle and in here.
+    // But that is not a big overhead. To fix this we need to "unregister"
+    // this generic handler for created vehicles. Current demuxer implementation
+    // does not support this.
     mav_stream->Get_demuxer().
             Register_handler<mavlink::MESSAGE_ID::HEARTBEAT, mavlink::Extension>(
             Mavlink_demuxer::Make_handler<mavlink::MESSAGE_ID::HEARTBEAT, mavlink::Extension>(
                     &Mavlink_vehicle_manager::On_heartbeat,
                     Shared_from_this(),
-                    mav_stream));
+                    mav_stream),
+                    Mavlink_demuxer::SYSTEM_ID_ANY,
+                    Mavlink_demuxer::COMPONENT_ID_ANY,
+                    Shared_from_this());
 
-    mav_stream->Get_demuxer().
-            Register_handler<mavlink::MESSAGE_ID::PARAM_VALUE, mavlink::Extension>(
-            Mavlink_demuxer::Make_handler<mavlink::MESSAGE_ID::PARAM_VALUE, mavlink::Extension>(
-                    &Mavlink_vehicle_manager::On_param_value,
-                    Shared_from_this(),
-                    mav_stream));
-
-    detectors.emplace(
-            std::piecewise_construct,
-            std::forward_as_tuple(mav_stream),
-            std::forward_as_tuple(
-                    DETECTOR_TIMEOUT / TIMER_INTERVAL,
-                    peer_addr,
-                    custom_model_name,
-                    custom_serial_number,
-                    autopilot_type));
+    {
+        std::lock_guard<std::mutex> lock(detector_mutex);
+        detectors.emplace(
+                std::piecewise_construct,
+                std::forward_as_tuple(mav_stream),
+                std::forward_as_tuple(
+                        DETECTOR_TIMEOUT / TIMER_INTERVAL,
+                        peer_addr,
+                        custom_model_name,
+                        custom_serial_number,
+                        autopilot_type));
+    }
 
     mav_stream->Get_decoder().Register_raw_data_handler(
         ugcs::vsm::Mavlink_stream::Decoder::Make_raw_data_handler(
@@ -469,12 +585,12 @@ Mavlink_vehicle_manager::Handle_new_connection(
         hb->system_status = mavlink::MAV_STATE::MAV_STATE_UNINIT;
         mav_stream->Send_message(
             hb,
-            Mavlink_vehicle::VSM_SYSTEM_ID,
+            vsm_system_id,
             Mavlink_vehicle::VSM_COMPONENT_ID,
             Mavlink_vehicle::WRITE_TIMEOUT,
             Make_timeout_callback(
                 &Mavlink_vehicle_manager::Write_to_vehicle_timed_out, this, mav_stream),
-                Get_worker());
+                manager_worker);
     }
 
     Schedule_next_read(mav_stream);

@@ -15,7 +15,7 @@
 
 /** Mavlink compatible vehicle class. It contains the functionality which
  * is considered to be "common" for all Mavlink compatible vehicles. Ardupilot
- * and ArDrone are the most typical examples. Autopilot/Vehicle specific
+ * and PX4 are the most typical examples. Autopilot/Vehicle specific
  * functionality is expected to be implemented in derived classes by linking
  * together existing and new activities. */
 class Mavlink_vehicle: public ugcs::vsm::Vehicle
@@ -27,29 +27,30 @@ public:
         CUSTOM = 0,     // Use this when creating mavlink vehicle not in the list.
         EMULATOR = 1,
         ARDUPILOT = 2,
-        PX4 = 3,
-        ARDRONE = 4
+        PX4 = 3
     };
 
-    template<typename... Args>
+    // Constructor for command processor.
+    Mavlink_vehicle(Vendor vendor, const std::string& autopilot_type, ugcs::vsm::proto::Vehicle_type type);
+
     Mavlink_vehicle(
         ugcs::vsm::Mavlink_demuxer::System_id system_id,
         ugcs::vsm::Mavlink_demuxer::Component_id component_id,
         Vendor vendor,
         ugcs::vsm::mavlink::MAV_TYPE type,
-        ugcs::vsm::Io_stream::Ref stream,
+        ugcs::vsm::Mavlink_stream::Ptr stream,
         ugcs::vsm::Optional<std::string> mission_dump_path,
         const std::string& serial,
         const std::string& model,
-        Args &&... args) :
-            ugcs::vsm::Vehicle(
-                std::forward<Args>(args)...),
-                real_system_id(system_id),
-                real_component_id(component_id),
-                mission_dump_path(mission_dump_path),
-                mav_stream(ugcs::vsm::Mavlink_stream::Create(stream)),
-            mav_type(type),
+        ugcs::vsm::Request_processor::Ptr proc,
+        ugcs::vsm::Request_completion_context::Ptr comp):
+            ugcs::vsm::Vehicle(ugcs::vsm::proto::DEVICE_TYPE_VEHICLE, proc, comp),
+            real_system_id(system_id),
+            real_component_id(component_id),
+            mission_dump_path(mission_dump_path),
+            mav_stream(stream),
             vehicle_vendor(vendor),
+            common_handlers(*this),
             heartbeat(*this),
             statistics(*this),
             read_parameters(*this),
@@ -61,7 +62,7 @@ public:
             telemetry(*this),
             mission_upload(*this)
     {
-        Set_port_name(stream->Get_name());
+        Set_port_name(stream->Get_stream()->Get_name());
         Set_serial_number(serial);
         Set_model_name(model);
 
@@ -116,10 +117,14 @@ public:
             Set_vehicle_type(ugcs::vsm::proto::VEHICLE_TYPE_VTOL);
             break;
         default:
-            LOG_INFO("Could not deduct vehicle type and frame from mav_type: %d", type);
+            LOG_ERR("Could not deduct vehicle type and frame from mav_type: %d", type);
         }
 
-        VEHICLE_LOG_WRN(*this, "New mavlink Vehicle type=%d, default frame=%s", Get_vehicle_type(), Get_frame_type().c_str());
+        VEHICLE_LOG_WRN(
+            *this,
+            "New mavlink Vehicle type=%d, default frame=%s",
+            Get_vehicle_type(),
+            Get_frame_type().c_str());
 
         t_servo_pwm_1 = flight_controller->Add_telemetry("servo_pwm_1", ugcs::vsm::proto::FIELD_SEMANTIC_NUMERIC);
         t_servo_pwm_2 = flight_controller->Add_telemetry("servo_pwm_2", ugcs::vsm::proto::FIELD_SEMANTIC_NUMERIC);
@@ -137,11 +142,11 @@ public:
 
     /** System ID of a VSM itself. Thats is the value seen by vehicle. Value
      * to be defined by a subclass. */
-    static const ugcs::vsm::Mavlink_demuxer::System_id VSM_SYSTEM_ID;
+    ugcs::vsm::Mavlink_demuxer::System_id vsm_system_id = 1;
 
     /** Component ID of VSM. Use this as source component_id in all messages
      * from vsm to vehicle. Value to be defined by a subclass.*/
-    static const ugcs::vsm::Mavlink_demuxer::Component_id VSM_COMPONENT_ID;
+    static constexpr ugcs::vsm::Mavlink_demuxer::Component_id VSM_COMPONENT_ID = ugcs::vsm::mavlink::MAV_COMP_ID_MISSIONPLANNER;
 
     /** Write operations timeout. */
     constexpr static std::chrono::seconds
@@ -161,6 +166,9 @@ public:
     // Return false if heartbeat is from gimbal, GCS, etc...
     static bool
     Is_vehicle_heartbeat_valid(ugcs::vsm::mavlink::Message<ugcs::vsm::mavlink::MESSAGE_ID::HEARTBEAT>::Ptr message);
+
+    // Helper to tell vehicle manager to remove from vehicle list.
+    bool is_active = true;
 
 protected:
     void
@@ -209,12 +217,7 @@ protected:
 
     /** Uses the above variables to detect recent boot and
      * reset altitude origin.
-     * NOTE: This function should only be called from GPS_RAW_INT message
-     * because it is the only message which is consistent for both ardupilot
-     * and ArDrone. Other common messages (ATTITUDE, GLOBAL_POSITION_INT)
-     * are incorrectly implemented in ArDrone, they report microseconds,
-     * not ms as required by mavlink specification.
-     * )*/
+     */
     void
     Update_boot_time(std::chrono::milliseconds);
 
@@ -229,10 +232,6 @@ protected:
     /** Reset state machine to initial state and start vehicle waiting. */
     void
     Wait_for_vehicle();
-
-    /** Get the type of Mavlink vehicle. */
-    ugcs::vsm::mavlink::MAV_TYPE
-    Get_mav_type() const;
 
     /** Get the vendor of vehicle */
     Vendor
@@ -319,14 +318,8 @@ protected:
     /** Mavlink streams towards the vehicle. */
     ugcs::vsm::Mavlink_stream::Ptr mav_stream;
 
-    // Frame type from heartbeat.
-    ugcs::vsm::mavlink::MAV_TYPE mav_type;
-
     // Vendors have some differences of mavlink implementation. Use this to handle them.
     Vendor vehicle_vendor;
-
-    /** Current Mavlink read operation. */
-    ugcs::vsm::Operation_waiter read_op;
 
     uint8_t base_mode = 0;
 
@@ -337,8 +330,6 @@ protected:
     static constexpr float DEFAULT_TELEMETRY_RATE = 2.0;
 
     uint8_t telemetry_rate_hz = DEFAULT_TELEMETRY_RATE;
-
-    bool is_telemetry_in_dance_mode = false;
 
     /** Number of telemetry message types we are expecting to receive per second. */
     float expected_telemetry_rate = 0;
@@ -355,8 +346,17 @@ protected:
         return (base_mode & ugcs::vsm::mavlink::MAV_MODE_FLAG::MAV_MODE_FLAG_SAFETY_ARMED);
     }
 
-    uint32_t
+    static uint32_t
     Get_mission_item_hash(const ugcs::vsm::mavlink::Pld_mission_item& msg);
+
+    // Generate QGC WPL format 110
+    static std::string
+    Generate_wpl(const ugcs::vsm::mavlink::Payload_list& messages, bool use_crlf);
+
+    // Forward declaration to make sure list is initialized before default_handlers.
+    class Activity;
+    /** List of activities of the vehicle. */
+    std::list<Activity*> activities;
 
     /** Represents an activity ongoing with a vehicle. This is mostly a
      * convenience class to separate activity-related methods and members.
@@ -384,7 +384,7 @@ protected:
             extended_retry_timeout(vehicle.command_timeout * 3),
             vehicle(vehicle)
         {
-            /* Vehicle known about all its activities. */
+            /* Vehicle knows about all its activities. */
             vehicle.activities.push_back(this);
         }
 
@@ -394,6 +394,13 @@ protected:
         /** Disable the activity. */
         void
         Disable();
+
+        /** Disable the activity. */
+        void
+        Disable(const std::string& status);
+
+        void
+        Disable_success();
 
         /** Disable event to be overridden by a subclass, if necessary. */
         virtual void
@@ -415,40 +422,30 @@ protected:
          * @param callable Message handler, i.e. method of the activity which
          * meets Mavlink demuxer message handler requirements.
          * @param pthis Pointer to activity instance.
-         * @param component_id Component id of the sender.
+         * @param args ugcs::vsm::Optional arguments for the Message handler.
+         * @param component_id Component id of the sender defaults to COMPONENT_ID_ANY.
          * @param system_id System id of the sender. If not specified, then real
          * system id of the vehicle is used.
-         * @param args ugcs::vsm::Optional arguments for the Message handler.
          */
 
         template<ugcs::vsm::mavlink::MESSAGE_ID_TYPE msg_id, class Extention_type = ugcs::vsm::mavlink::Extension,
                 class Callable, class This, typename... Args>
         ugcs::vsm::Mavlink_demuxer::Key
         Register_mavlink_handler(Callable &&callable, This *pthis,
-                ugcs::vsm::Mavlink_demuxer::Component_id component_id,
                 Args&& ...args,
+                ugcs::vsm::Mavlink_demuxer::Component_id component_id = ugcs::vsm::Mavlink_demuxer::COMPONENT_ID_ANY,
                 ugcs::vsm::Optional<ugcs::vsm::Mavlink_demuxer::System_id> system_id =
                         ugcs::vsm::Optional<ugcs::vsm::Mavlink_demuxer::System_id>()                        )
         {
             auto key =
                 vehicle.mav_stream->Get_demuxer().Register_handler<msg_id, Extention_type>(
-                        ugcs::vsm::Mavlink_demuxer::Make_handler<msg_id, Extention_type>(
-                                std::forward<Callable>(callable),
-                                pthis, std::forward<Args>(args)...),
-                                system_id ? *system_id : vehicle.real_system_id,
-                                component_id);
+                    ugcs::vsm::Mavlink_demuxer::Make_handler<msg_id, Extention_type>(
+                        std::forward<Callable>(callable),
+                        pthis, std::forward<Args>(args)...),
+                        system_id ? *system_id : vehicle.real_system_id,
+                        component_id);
             registered_handlers.push_back(key);
             return key;
-        }
-
-        /** Unregister all currently registered Mavlink message handlers. */
-        void
-        Unregister_mavlink_handlers()
-        {
-            for (auto& key : registered_handlers) {
-                vehicle.mav_stream->Get_demuxer().Unregister_handler(key);
-            }
-            registered_handlers.clear();
         }
 
         /**
@@ -488,15 +485,12 @@ protected:
 
         /** Send Mavlink message to the vehicle. */
         void
-        Send_message(
-                const ugcs::vsm::mavlink::Payload_base& payload,
-                uint8_t system_id = VSM_SYSTEM_ID,
-                uint8_t component_id = VSM_COMPONENT_ID)
+        Send_message(const ugcs::vsm::mavlink::Payload_base& payload)
         {
             vehicle.mav_stream->Send_message(
                     payload,
-                    system_id,
-                    component_id,
+                    vehicle.vsm_system_id,
+                    VSM_COMPONENT_ID,
                     Mavlink_vehicle::WRITE_TIMEOUT,
                     Make_timeout_callback(
                             &Mavlink_vehicle::Write_to_vehicle_timed_out,
@@ -508,6 +502,9 @@ protected:
         /** Managed vehicle. */
         Mavlink_vehicle& vehicle;
 
+        /** new style command request. */
+        ugcs::vsm::Ucs_request::Ptr ucs_request = nullptr;
+
     private:
         /** Handlers registered in demuxer. */
         std::vector<ugcs::vsm::Mavlink_demuxer::Key>
@@ -515,10 +512,7 @@ protected:
 
         /** Next action to execute. */
         Next_action next_action;
-    };
-
-    /** List of activities of the vehicle. */
-    std::list<Activity*> activities;
+    } common_handlers;
 
     /** Heartbeat receiving activity. */
     class Heartbeat: public Activity {
@@ -1163,7 +1157,7 @@ protected:
         Dump_mission();
 
         /** Mission items to be uploaded to the vehicle. */
-        std::vector<ugcs::vsm::mavlink::Payload_base::Ptr> mission_items;
+        ugcs::vsm::mavlink::Payload_list mission_items;
 
         /** Current action being uploaded. */
         ssize_t current_action;
@@ -1217,7 +1211,6 @@ protected:
      */
     friend class Ardupilot_vehicle;
     friend class Emulator_vehicle;
-    friend class Ardrone_vehicle;
     friend class Px4_vehicle;
     friend class Airmast_vehicle;
 

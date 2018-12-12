@@ -32,17 +32,34 @@ protected:
             ugcs::vsm::Mavlink_demuxer::System_id system_id,
             ugcs::vsm::Mavlink_demuxer::Component_id component_id,
             ugcs::vsm::mavlink::MAV_TYPE type,
-            ugcs::vsm::Io_stream::Ref stream,
+            ugcs::vsm::Mavlink_stream::Ptr stream,
             ugcs::vsm::Socket_address::Ptr peer_addr,
             ugcs::vsm::Optional<std::string> mission_dump_path,
             const std::string& serial_number,
-            const std::string& model_name) = 0;
+            const std::string& model_name,
+            ugcs::vsm::Request_processor::Ptr proc,
+            ugcs::vsm::Request_completion_context::Ptr comp) = 0;
 
     /** Subclass should override this method to register On_new_connection
      * methods to the transport detector.
      */
     virtual void
     Register_detectors() = 0;
+
+    // Used for mavlink packet injection.
+    bool
+    Default_mavlink_handler(
+        ugcs::vsm::Io_buffer::Ptr buf,
+        ugcs::vsm::mavlink::MESSAGE_ID_TYPE message_id,
+        uint8_t,
+        uint8_t,
+        uint8_t);
+
+    void
+    Schedule_injection_read(ugcs::vsm::Mavlink_stream::Ptr);
+
+    void
+    Handle_new_injector(std::string, int, ugcs::vsm::Socket_address::Ptr, ugcs::vsm::Io_stream::Ref);
 
     /** Add a pattern to trigger extended detection timeout. */
     void
@@ -66,10 +83,6 @@ protected:
 
     /** Configuration file prefix. */
     std::string config_prefix;
-
-    /** Get vehicle manager worker. */
-    ugcs::vsm::Request_worker::Ptr
-    Get_worker();
 
     /** Called when manager is disabled. To be overridden by subclass, if
      * necessary. */
@@ -111,7 +124,7 @@ private:
             uint8_t component_id);
 
     /** Prototcol detection polling interval. */
-    const std::chrono::milliseconds TIMER_INTERVAL = std::chrono::milliseconds(100);
+    const std::chrono::milliseconds TIMER_INTERVAL = std::chrono::milliseconds(500);
 
     /** Detector should receive at least this much bytes to fail detection. */
     const unsigned int MAX_UNDETECTED_BYTES = 300;
@@ -130,7 +143,13 @@ private:
      * system id maps to [model name, serial number]. */
     std::unordered_map<int, std::pair<std::string, std::string> > preconfigured;
 
-    ugcs::vsm::Request_worker::Ptr worker;
+    // This worker handles vehicle Creation/Enabling
+    ugcs::vsm::Request_worker::Ptr manager_worker;
+
+    // All vehicle connection readers and Vehicles will use this thread.
+    // This is to support multiple vehicles on one connection.
+    ugcs::vsm::Request_worker::Ptr vehicle_worker;
+    ugcs::vsm::Request_processor::Ptr vehicle_processor;
 
     /** Trivial detector state. */
     class Detector_ctx {
@@ -178,6 +197,7 @@ private:
      * or detection failed.
      */
     std::unordered_map<ugcs::vsm::Mavlink_stream::Ptr, Detector_ctx> detectors;
+    std::mutex detector_mutex;  // Protect access to detectors.
 
     /** Watchdog timer for detection. */
     ugcs::vsm::Timer_processor::Timer::Ptr watchdog_timer;
@@ -188,15 +208,15 @@ private:
     /** Patterns which extended detection timeout. */
     std::vector<regex::regex> extension_patterns;
 
+    std::unordered_map<ugcs::vsm::Mavlink_stream::Ptr, ugcs::vsm::Operation_waiter> injection_readers;
+
+    // SYSID for outgoing mavlink packets from VSM.
+    ugcs::vsm::Mavlink_demuxer::System_id vsm_system_id = 1;
+
     void
     Write_to_vehicle_timed_out(
             const ugcs::vsm::Operation_waiter::Ptr& waiter,
             ugcs::vsm::Mavlink_stream::Weak_ptr mav_stream);
-
-    void
-    On_param_value(
-            ugcs::vsm::mavlink::Message<ugcs::vsm::mavlink::MESSAGE_ID::PARAM_VALUE>::Ptr message,
-            ugcs::vsm::Mavlink_stream::Ptr mav_stream);
 
     /** Create new or update existing vehicles based on received system id
      * and type of the vehicle. */
