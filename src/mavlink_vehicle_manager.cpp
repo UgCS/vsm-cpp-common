@@ -225,6 +225,14 @@ Mavlink_vehicle_manager::Load_vehicle_config()
         mission_dump_path = filename;
     }
 
+    if (props->Exists("vehicle.detection_timeout")) {
+        int t = props->Get_int("vehicle.detection_timeout");
+        if (t > 0 && t <= 100) {
+            detection_timeout = std::chrono::seconds(t);
+            LOG_INFO("Vehicle detection timeout set to %d seconds.", t);
+        }
+    }
+
     if (props->Exists("mavlink.vsm_system_id")) {
         vsm_system_id = props->Get_int("mavlink.vsm_system_id");
     }
@@ -376,7 +384,7 @@ Mavlink_vehicle_manager::On_heartbeat(
                 }
                 // Restart detection if vehicle is already connected.
                 // This allows automatic reconnect on this link when current vehicle times out.
-                det_iter->second.timeout = DETECTOR_TIMEOUT / TIMER_INTERVAL;
+                det_iter->second.timeout = detection_timeout / TIMER_INTERVAL;
             }
         }
     }
@@ -543,33 +551,33 @@ Mavlink_vehicle_manager::Handle_new_connection(
     // this generic handler for created vehicles. Current demuxer implementation
     // does not support this.
     mav_stream->Get_demuxer().
-            Register_handler<mavlink::MESSAGE_ID::HEARTBEAT, mavlink::Extension>(
-            Mavlink_demuxer::Make_handler<mavlink::MESSAGE_ID::HEARTBEAT, mavlink::Extension>(
-                    &Mavlink_vehicle_manager::On_heartbeat,
-                    Shared_from_this(),
-                    mav_stream),
-                    Mavlink_demuxer::SYSTEM_ID_ANY,
-                    Mavlink_demuxer::COMPONENT_ID_ANY,
-                    Shared_from_this());
+        Register_handler<mavlink::MESSAGE_ID::HEARTBEAT, mavlink::Extension>(
+        Mavlink_demuxer::Make_handler<mavlink::MESSAGE_ID::HEARTBEAT, mavlink::Extension>(
+            &Mavlink_vehicle_manager::On_heartbeat,
+            Shared_from_this(),
+            mav_stream),
+            Mavlink_demuxer::SYSTEM_ID_ANY,
+            Mavlink_demuxer::COMPONENT_ID_ANY,
+            Shared_from_this());
 
     {
         std::lock_guard<std::mutex> lock(detector_mutex);
         detectors.emplace(
-                std::piecewise_construct,
-                std::forward_as_tuple(mav_stream),
-                std::forward_as_tuple(
-                        DETECTOR_TIMEOUT / TIMER_INTERVAL,
-                        peer_addr,
-                        custom_model_name,
-                        custom_serial_number,
-                        autopilot_type));
+            std::piecewise_construct,
+            std::forward_as_tuple(mav_stream),
+            std::forward_as_tuple(
+                detection_timeout / TIMER_INTERVAL,
+                peer_addr,
+                custom_model_name,
+                custom_serial_number,
+                autopilot_type));
     }
 
     mav_stream->Get_decoder().Register_raw_data_handler(
         ugcs::vsm::Mavlink_stream::Decoder::Make_raw_data_handler(
-                    &Mavlink_vehicle_manager::On_raw_data,
-                    Shared_from_this(),
-                    mav_stream));
+            &Mavlink_vehicle_manager::On_raw_data,
+            Shared_from_this(),
+            mav_stream));
 
     // Workaround for case when vehicle is connected via UDP via esp-link device.
     // It sends telemetry to broadcast address by default and starts unicasting only

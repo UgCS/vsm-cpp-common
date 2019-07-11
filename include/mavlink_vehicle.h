@@ -134,14 +134,21 @@ public:
         t_servo_pwm_6 = flight_controller->Add_telemetry("servo_pwm_6", ugcs::vsm::proto::FIELD_SEMANTIC_NUMERIC);
         t_servo_pwm_7 = flight_controller->Add_telemetry("servo_pwm_7", ugcs::vsm::proto::FIELD_SEMANTIC_NUMERIC);
         t_servo_pwm_8 = flight_controller->Add_telemetry("servo_pwm_8", ugcs::vsm::proto::FIELD_SEMANTIC_NUMERIC);
+        t_servo_pwm_9 = flight_controller->Add_telemetry("servo_pwm_9", ugcs::vsm::proto::FIELD_SEMANTIC_NUMERIC);
+        t_servo_pwm_10 = flight_controller->Add_telemetry("servo_pwm_10", ugcs::vsm::proto::FIELD_SEMANTIC_NUMERIC);
+        t_servo_pwm_11 = flight_controller->Add_telemetry("servo_pwm_11", ugcs::vsm::proto::FIELD_SEMANTIC_NUMERIC);
+        t_servo_pwm_12 = flight_controller->Add_telemetry("servo_pwm_12", ugcs::vsm::proto::FIELD_SEMANTIC_NUMERIC);
+        t_servo_pwm_13 = flight_controller->Add_telemetry("servo_pwm_13", ugcs::vsm::proto::FIELD_SEMANTIC_NUMERIC);
+        t_servo_pwm_14 = flight_controller->Add_telemetry("servo_pwm_14", ugcs::vsm::proto::FIELD_SEMANTIC_NUMERIC);
+        t_servo_pwm_15 = flight_controller->Add_telemetry("servo_pwm_15", ugcs::vsm::proto::FIELD_SEMANTIC_NUMERIC);
+        t_servo_pwm_16 = flight_controller->Add_telemetry("servo_pwm_16", ugcs::vsm::proto::FIELD_SEMANTIC_NUMERIC);
 
         t_vibration_x = flight_controller->Add_telemetry("vibration_x", ugcs::vsm::proto::FIELD_SEMANTIC_NUMERIC);
         t_vibration_y = flight_controller->Add_telemetry("vibration_y", ugcs::vsm::proto::FIELD_SEMANTIC_NUMERIC);
         t_vibration_z = flight_controller->Add_telemetry("vibration_z", ugcs::vsm::proto::FIELD_SEMANTIC_NUMERIC);
     }
 
-    /** System ID of a VSM itself. Thats is the value seen by vehicle. Value
-     * to be defined by a subclass. */
+    /** System ID of a VSM itself. */
     ugcs::vsm::Mavlink_demuxer::System_id vsm_system_id = 1;
 
     /** Component ID of VSM. Use this as source component_id in all messages
@@ -189,6 +196,14 @@ protected:
     ugcs::vsm::Property::Ptr t_servo_pwm_6 = nullptr;
     ugcs::vsm::Property::Ptr t_servo_pwm_7 = nullptr;
     ugcs::vsm::Property::Ptr t_servo_pwm_8 = nullptr;
+    ugcs::vsm::Property::Ptr t_servo_pwm_9 = nullptr;
+    ugcs::vsm::Property::Ptr t_servo_pwm_10 = nullptr;
+    ugcs::vsm::Property::Ptr t_servo_pwm_11 = nullptr;
+    ugcs::vsm::Property::Ptr t_servo_pwm_12 = nullptr;
+    ugcs::vsm::Property::Ptr t_servo_pwm_13 = nullptr;
+    ugcs::vsm::Property::Ptr t_servo_pwm_14 = nullptr;
+    ugcs::vsm::Property::Ptr t_servo_pwm_15 = nullptr;
+    ugcs::vsm::Property::Ptr t_servo_pwm_16 = nullptr;
 
     /** How much reported vehicle clock can differ to drop altitude origin */
     static constexpr std::chrono::milliseconds
@@ -1205,6 +1220,9 @@ protected:
 
     // Keep current sequence number reported via MISSION_CURRENT.
     int current_mission_item_index = -1;
+
+    // Force use of specific mavlink version.
+    ugcs::vsm::Optional<bool> use_mavlink_2;
 
     /* Somewhat ugly friendship is needed to enable activities from derived
      * classes to access activities from base class.

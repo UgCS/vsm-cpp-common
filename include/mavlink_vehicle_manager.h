@@ -131,7 +131,7 @@ private:
 
     /** Detector should wait this much milliseconds to fail detection.
      * The interval is so big because APM takes ~4 seconds to boot when connected directly to USB*/
-    const std::chrono::milliseconds DETECTOR_TIMEOUT = std::chrono::milliseconds(6000);
+    const std::chrono::milliseconds DETECTION_TIMEOUT_DEFAULT = std::chrono::milliseconds(6000);
 
     /** Timeout is extended to this value when raw data patterns are matched. */
     const std::chrono::milliseconds EXTENDED_TIMEOUT = std::chrono::milliseconds(5000);
@@ -212,6 +212,8 @@ private:
 
     // SYSID for outgoing mavlink packets from VSM.
     ugcs::vsm::Mavlink_demuxer::System_id vsm_system_id = 1;
+
+    std::chrono::milliseconds detection_timeout = DETECTION_TIMEOUT_DEFAULT;
 
     void
     Write_to_vehicle_timed_out(

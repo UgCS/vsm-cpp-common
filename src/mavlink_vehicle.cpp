@@ -98,6 +98,33 @@ Mavlink_vehicle::On_enable()
     // Assume downlink and uplink is present for mavlink vehicles.
     t_uplink_present->Set_value(true);
     t_downlink_present->Set_value(true);
+
+    auto props = Properties::Get_instance().get();
+    if (props->Exists("mavlink.vsm_system_id")) {
+        int sid = props->Get_int("mavlink.vsm_system_id");
+        if (sid > 0 && sid < 255) {
+            vsm_system_id = sid;
+        } else {
+            VEHICLE_LOG_ERR((*this), "Invalid value '%d' for vsm_system_id", sid);
+        }
+    }
+
+    if (props->Exists("mavlink.protocol_version")) {
+        auto value = props->Get("mavlink.protocol_version");
+        Trim(value);
+        if (value == "1") {
+            use_mavlink_2 = false;
+            VEHICLE_LOG_DBG(*this, "Force MAVLINK1");
+        } else if (value == "2") {
+            use_mavlink_2 = true;
+            VEHICLE_LOG_DBG(*this, "Force MAVLINK2");
+            mav_stream->Set_mavlink_v2(true);
+        } else if (value == "auto") {
+            use_mavlink_2.Disengage();
+        } else {
+            VEHICLE_LOG_ERR(*this, "Invalid value '%s' for mavlink.protocol_version", value.c_str());
+        }
+    }
 }
 
 void
@@ -1591,12 +1618,6 @@ void
 Mavlink_vehicle::Telemetry::On_attitude(
         mavlink::Message<mavlink::MESSAGE_ID::ATTITUDE>::Ptr message)
 {
-    float current_time_since_boot = message->payload->time_boot_ms;
-    if (current_time_since_boot / 1000.0 < (prev_time_since_boot - VEHICLE_RESET_TIME_DIFFERENCE)) {
-        VEHICLE_LOG_WRN(vehicle, "Vehicle rebooted, reconnecting.");
-        vehicle.is_active = false;
-        return;
-    }
     telemetry_messages_last++;
     telemetry_alive = true;
 
@@ -1793,7 +1814,16 @@ Mavlink_vehicle::Telemetry::On_servo_output_raw(
     vehicle.t_servo_pwm_6->Set_value(message->payload->servo6_raw.Get());
     vehicle.t_servo_pwm_7->Set_value(message->payload->servo7_raw.Get());
     vehicle.t_servo_pwm_8->Set_value(message->payload->servo8_raw.Get());
-
+    if (vehicle.mav_stream->Is_mavlink_v2()) {
+        vehicle.t_servo_pwm_9->Set_value(message->payload->servo9_raw.Get());
+        vehicle.t_servo_pwm_10->Set_value(message->payload->servo10_raw.Get());
+        vehicle.t_servo_pwm_11->Set_value(message->payload->servo11_raw.Get());
+        vehicle.t_servo_pwm_12->Set_value(message->payload->servo12_raw.Get());
+        vehicle.t_servo_pwm_13->Set_value(message->payload->servo13_raw.Get());
+        vehicle.t_servo_pwm_14->Set_value(message->payload->servo14_raw.Get());
+        vehicle.t_servo_pwm_15->Set_value(message->payload->servo15_raw.Get());
+        vehicle.t_servo_pwm_16->Set_value(message->payload->servo16_raw.Get());
+    }
     vehicle.Commit_to_ucs();
 }
 
