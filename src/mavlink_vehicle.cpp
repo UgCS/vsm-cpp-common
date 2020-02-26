@@ -102,10 +102,19 @@ Mavlink_vehicle::On_enable()
     auto props = Properties::Get_instance().get();
     if (props->Exists("mavlink.vsm_system_id")) {
         int sid = props->Get_int("mavlink.vsm_system_id");
-        if (sid > 0 && sid < 255) {
+        if (sid > 0 && sid < 256) {
             vsm_system_id = sid;
         } else {
             VEHICLE_LOG_ERR((*this), "Invalid value '%d' for vsm_system_id", sid);
+        }
+    }
+
+    if (props->Exists("mavlink.vsm_component_id")) {
+        int sid = props->Get_int("mavlink.vsm_component_id");
+        if (sid > 0 && sid < 256) {
+            vsm_component_id = sid;
+        } else {
+            VEHICLE_LOG_ERR((*this), "Invalid value '%d' for vsm_component_id", sid);
         }
     }
 
@@ -238,7 +247,7 @@ Mavlink_vehicle::Send_message(const mavlink::Payload_base& payload)
     mav_stream->Send_message(
             payload,
             vsm_system_id,
-            VSM_COMPONENT_ID,
+            vsm_component_id,
             Mavlink_vehicle::WRITE_TIMEOUT,
             Make_timeout_callback(
                     &Mavlink_vehicle::Write_to_vehicle_timed_out,
@@ -253,7 +262,7 @@ Mavlink_vehicle::Send_message_v1(const mavlink::Payload_base& payload)
     mav_stream->Send_message(
             payload,
             vsm_system_id,
-            VSM_COMPONENT_ID,
+            vsm_component_id,
             Mavlink_vehicle::WRITE_TIMEOUT,
             Make_timeout_callback(
                     &Mavlink_vehicle::Write_to_vehicle_timed_out,
@@ -269,7 +278,7 @@ Mavlink_vehicle::Send_message_v2(const mavlink::Payload_base& payload)
     mav_stream->Send_message(
             payload,
             vsm_system_id,
-            VSM_COMPONENT_ID,
+            vsm_component_id,
             Mavlink_vehicle::WRITE_TIMEOUT,
             Make_timeout_callback(
                     &Mavlink_vehicle::Write_to_vehicle_timed_out,
@@ -404,6 +413,8 @@ Mavlink_vehicle::Mav_mission_result_to_string(int r)
         return "Route unsupported";
     case mavlink::MAV_MISSION_UNSUPPORTED_FRAME:
         return "Invalid frame";
+    case mavlink::MAV_MISSION_OPERATION_CANCELLED:
+        return "Operation cancelled";
     }
     return "UNDEFINED";
 }
@@ -950,7 +961,9 @@ Mavlink_vehicle::Write_parameters::_List::Append_int_px4(
     param->param_id = name;
     param->param_type = type;
     // PX4 uses bitwise representation of int in float field.
-    memcpy(&param->param_value, &value, sizeof(value));
+    float f;
+    memcpy(&f, &value, sizeof(value));
+    param->param_value = f;
     push_back(param);
 }
 
@@ -1153,7 +1166,7 @@ void
 Mavlink_vehicle::Read_waypoints::On_count(
         mavlink::Message<mavlink::MESSAGE_ID::MISSION_COUNT>::Ptr message)
 {
-    if (message->payload->target_component != VSM_COMPONENT_ID ||
+    if (message->payload->target_component != vehicle.vsm_component_id ||
         message->payload->target_system != vehicle.vsm_system_id) {
         /* Not to us, ignore. */
         return;
@@ -1180,7 +1193,7 @@ void
 Mavlink_vehicle::Read_waypoints::On_item(
         mavlink::Message<mavlink::MESSAGE_ID::MISSION_ITEM>::Ptr message)
 {
-    if (message->payload->target_component != VSM_COMPONENT_ID ||
+    if (message->payload->target_component != vehicle.vsm_component_id ||
         message->payload->target_system != vehicle.vsm_system_id) {
         /* Not to us, ignore. */
         return;
@@ -1199,7 +1212,7 @@ void
 Mavlink_vehicle::Read_waypoints::On_mission_ack(
         mavlink::Message<mavlink::MESSAGE_ID::MISSION_ACK>::Ptr message)
 {
-    if (message->payload->target_component != VSM_COMPONENT_ID ||
+    if (message->payload->target_component != vehicle.vsm_component_id ||
         message->payload->target_system != vehicle.vsm_system_id) {
         /* Not to us, ignore. */
         return;
@@ -1498,6 +1511,26 @@ Mavlink_vehicle::Telemetry::On_sys_status(
     int new_sensor_enabled = message->payload->onboard_control_sensors_enabled;
     // Ignore sensor removal
     vehicle.current_sensors_present |= message->payload->onboard_control_sensors_present;
+
+    // Workaround for PX4 bug which reports invalid sensor states
+    // See: https://github.com/PX4/Firmware/pull/11886
+    // It's fixed in PX4 1.9 but there are still lots of older autopilots out there (Yuneec).
+    // We ignore simultaneous failure of more than three sensors.
+    if (new_sensor_enabled == 0) {
+        // Count the bits changed.
+        int count = 0;
+        auto n = vehicle.current_sensor_enabled;
+        while (n && count < 3)
+        {
+            count += n & 1;
+            n >>= 1;
+        }
+        if (count == 3) {
+            // If at least 3 sensors failed at once, ignore it.
+            new_sensor_health = vehicle.current_sensor_health;
+            new_sensor_enabled = vehicle.current_sensor_enabled;
+        }
+    }
 
     std::string enabled;
     std::string disabled;
@@ -1885,7 +1918,7 @@ Mavlink_vehicle::Mission_upload::On_mission_ack(
         mavlink::Message<mavlink::MESSAGE_ID::MISSION_ACK>::Ptr message)
 {
     VEHICLE_LOG_INF(vehicle, "MISSION ACK: %s", message->payload.Dump().c_str());
-    if (message->payload->target_component != VSM_COMPONENT_ID ||
+    if (message->payload->target_component != vehicle.vsm_component_id ||
         message->payload->target_system != vehicle.vsm_system_id) {
         /* Not for us, ignore. */
         return;
@@ -1930,7 +1963,7 @@ Mavlink_vehicle::Mission_upload::On_mission_request(
         return;
     } else if (current_action == message->payload->seq) {
         /* Request for the same item. */
-        VEHICLE_LOG_INF(vehicle, "Requested same item: %ld", current_action);
+        VEHICLE_LOG_INF(vehicle, "Requested same item: %zd", current_action);
     } else if (current_action + 1 != message->payload->seq) {
         /* Wrong sequence. */
         return;
@@ -2068,7 +2101,7 @@ Mavlink_vehicle::Get_mission_item_hash(const mavlink::Pld_mission_item& msg)
     {
         h.Add_int(static_cast<int>(msg->x.Get() * 100000));  // +/- 10m
         h.Add_int(static_cast<int>(msg->y.Get() * 100000));  // +/- 10m
-        h.Add_int(static_cast<int>(msg->y.Get() * 100));     // +/- 10cm
+        h.Add_int(static_cast<int>(msg->z.Get() * 100));     // +/- 10cm
     }
     return h.Get();
 }

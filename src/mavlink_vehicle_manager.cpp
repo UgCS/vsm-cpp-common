@@ -135,6 +135,9 @@ Mavlink_vehicle_manager::Default_mavlink_handler(
     case mavlink::MESSAGE_ID::GPS_INJECT_DATA:
         target = mavlink::Message<mavlink::MESSAGE_ID::GPS_INJECT_DATA>::Create(0, 0, 0, buf)->payload->target_system;
         break;
+    case mavlink::MESSAGE_ID::V2_EXTENSION:
+        target = mavlink::Message<mavlink::MESSAGE_ID::V2_EXTENSION>::Create(0, 0, 0, buf)->payload->target_system;
+        break;
     case mavlink::MESSAGE_ID::GPS_RTCM_DATA:
         // Messages which do not have target are broadcasted to all vehicles.
         target = mavlink::SYSTEM_ID_NONE;
@@ -234,8 +237,19 @@ Mavlink_vehicle_manager::Load_vehicle_config()
     }
 
     if (props->Exists("mavlink.vsm_system_id")) {
-        vsm_system_id = props->Get_int("mavlink.vsm_system_id");
+        int sid = props->Get_int("mavlink.vsm_system_id");
+        if (sid > 0 && sid < 256) {
+            vsm_system_id = sid;
+        }
     }
+
+    if (props->Exists("mavlink.vsm_component_id")) {
+        int sid = props->Get_int("mavlink.vsm_component_id");
+        if (sid > 0 && sid < 256) {
+            vsm_component_id = sid;
+        }
+    }
+
 
     if (!preconfigured.empty()) {
         LOG_INFO("%zu custom vehicle(-s) configured.", preconfigured.size());
@@ -245,7 +259,7 @@ Mavlink_vehicle_manager::Load_vehicle_config()
 }
 
 void
-Mavlink_vehicle_manager::Add_timeout_extension_pattern(const regex::regex& re)
+Mavlink_vehicle_manager::Add_timeout_extension_pattern(const std::regex& re)
 {
     extension_patterns.push_back(re);
 }
@@ -428,8 +442,8 @@ Mavlink_vehicle_manager::Handle_raw_line(
             ugcs::vsm::Mavlink_stream::Decoder::Raw_data_handler());
     }
     for (auto& re : extension_patterns) {
-        regex::smatch smatch;
-        if (regex::regex_search(ctx.curr_line, smatch, re)) {
+        std::smatch smatch;
+        if (std::regex_search(ctx.curr_line, smatch, re)) {
             LOG_DEBUG("Detection timeout extended due to pattern match: %s",
                     ctx.curr_line.c_str());
             ctx.timeout += EXTENDED_TIMEOUT / TIMER_INTERVAL;
@@ -594,7 +608,7 @@ Mavlink_vehicle_manager::Handle_new_connection(
         mav_stream->Send_message(
             hb,
             vsm_system_id,
-            Mavlink_vehicle::VSM_COMPONENT_ID,
+            vsm_component_id,
             Mavlink_vehicle::WRITE_TIMEOUT,
             Make_timeout_callback(
                 &Mavlink_vehicle_manager::Write_to_vehicle_timed_out, this, mav_stream),

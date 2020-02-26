@@ -63,7 +63,7 @@ protected:
 
     /** Add a pattern to trigger extended detection timeout. */
     void
-    Add_timeout_extension_pattern(const regex::regex&);
+    Add_timeout_extension_pattern(const std::regex&);
 
     /** Handler for a new transport connection. */
     void
@@ -206,12 +206,15 @@ private:
     ugcs::vsm::Optional<std::string> mission_dump_path;
 
     /** Patterns which extended detection timeout. */
-    std::vector<regex::regex> extension_patterns;
+    std::vector<std::regex> extension_patterns;
 
     std::unordered_map<ugcs::vsm::Mavlink_stream::Ptr, ugcs::vsm::Operation_waiter> injection_readers;
 
     // SYSID for outgoing mavlink packets from VSM.
-    ugcs::vsm::Mavlink_demuxer::System_id vsm_system_id = 1;
+    ugcs::vsm::Mavlink_demuxer::System_id vsm_system_id = 255;
+
+    // COMPID for outgoing mavlink packets from VSM.
+    int vsm_component_id = ugcs::vsm::mavlink::MAV_COMP_ID_ALL;
 
     std::chrono::milliseconds detection_timeout = DETECTION_TIMEOUT_DEFAULT;
 

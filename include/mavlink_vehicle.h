@@ -149,15 +149,14 @@ public:
     }
 
     /** System ID of a VSM itself. */
-    ugcs::vsm::Mavlink_demuxer::System_id vsm_system_id = 1;
+    ugcs::vsm::Mavlink_demuxer::System_id vsm_system_id = 255;
 
     /** Component ID of VSM. Use this as source component_id in all messages
-     * from vsm to vehicle. Value to be defined by a subclass.*/
-    static constexpr ugcs::vsm::Mavlink_demuxer::Component_id VSM_COMPONENT_ID = ugcs::vsm::mavlink::MAV_COMP_ID_MISSIONPLANNER;
+     * from vsm to vehicle. */
+    ugcs::vsm::Mavlink_demuxer::Component_id vsm_component_id = ugcs::vsm::mavlink::MAV_COMP_ID_ALL;
 
     /** Write operations timeout. */
-    constexpr static std::chrono::seconds
-    WRITE_TIMEOUT = std::chrono::seconds(180);
+    constexpr static std::chrono::seconds WRITE_TIMEOUT = std::chrono::seconds(180);
 
     bool
     Is_mission_upload_active();
@@ -505,7 +504,7 @@ protected:
             vehicle.mav_stream->Send_message(
                     payload,
                     vehicle.vsm_system_id,
-                    VSM_COMPONENT_ID,
+                    vehicle.vsm_component_id,
                     Mavlink_vehicle::WRITE_TIMEOUT,
                     Make_timeout_callback(
                             &Mavlink_vehicle::Write_to_vehicle_timed_out,
