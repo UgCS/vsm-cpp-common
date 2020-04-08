@@ -19,7 +19,7 @@ static const std::vector<std::string> SENSOR_NAMES = {
     "GPS",
     "OPT_FLOW",
     "VISION_POS",
-    "LASER_POS",
+    "RANGEFINDER",
     "EXT_GND_TRUTH",
     "ANG_RATE_CTRL",
     "ATTI_STAB",
@@ -33,7 +33,12 @@ static const std::vector<std::string> SENSOR_NAMES = {
     "MAG2",
     "GEOFENCE",
     "AHRS",
-    "TERRAIN"
+    "TERRAIN",
+    "REVERSE_MOTOR",
+    "LOGGING",
+    "BATTERY",
+    "PROXIMITY",
+    "SATCOM"
 };
 } // namespace
 
@@ -332,9 +337,9 @@ Mavlink_vehicle::Update_boot_time(std::chrono::milliseconds boot_duration)
         if (last_known_vehicle_boot_time_known) {
             if (report_relative_altitude) {
                 if (current_vehicle_boot_time - last_known_vehicle_boot_time > ALTITUDE_ORIGIN_RESET_TRESHOLD) {
-                    VEHICLE_LOG_INF((*this), "Vehicle rebooted %" PRId64 " s ago, resetting altitude origin...",
+                    VEHICLE_LOG_INF((*this), "Vehicle rebooted %" PRId64 " s ago.",
                             std::chrono::duration_cast<std::chrono::seconds>(boot_duration).count());
-                    Reset_altitude_origin();
+                    //Reset_altitude_origin();
                 }
             }
         } else {
@@ -347,8 +352,8 @@ Mavlink_vehicle::Update_boot_time(std::chrono::milliseconds boot_duration)
                     // already for more than 15 seconds.
                     VEHICLE_LOG_INF((*this), "Not resetting altitude origin on connect");
                 } else {
-                    VEHICLE_LOG_INF((*this), "Resetting altitude origin on connect");
-                    Reset_altitude_origin();
+                    //VEHICLE_LOG_INF((*this), "Resetting altitude origin on connect");
+                    //Reset_altitude_origin();
                 }
             }
             last_known_vehicle_boot_time_known = true;

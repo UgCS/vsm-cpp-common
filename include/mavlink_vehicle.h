@@ -360,6 +360,11 @@ protected:
         return (base_mode & ugcs::vsm::mavlink::MAV_MODE_FLAG::MAV_MODE_FLAG_SAFETY_ARMED);
     }
 
+    bool
+    Is_rangefinder_healthy() {
+        return (current_sensor_health & ugcs::vsm::mavlink::MAV_SYS_STATUS_SENSOR_LASER_POSITION);
+    }
+
     static uint32_t
     Get_mission_item_hash(const ugcs::vsm::mavlink::Pld_mission_item& msg);
 
