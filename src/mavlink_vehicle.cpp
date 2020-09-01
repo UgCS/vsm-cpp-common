@@ -337,9 +337,9 @@ Mavlink_vehicle::Update_boot_time(std::chrono::milliseconds boot_duration)
         if (last_known_vehicle_boot_time_known) {
             if (report_relative_altitude) {
                 if (current_vehicle_boot_time - last_known_vehicle_boot_time > ALTITUDE_ORIGIN_RESET_TRESHOLD) {
-                    VEHICLE_LOG_INF((*this), "Vehicle rebooted %" PRId64 " s ago.",
+                    VEHICLE_LOG_INF((*this), "Vehicle rebooted %" PRId64 " s ago, resetting altitude origin...",
                             std::chrono::duration_cast<std::chrono::seconds>(boot_duration).count());
-                    //Reset_altitude_origin();
+                    Reset_altitude_origin();
                 }
             }
         } else {
@@ -352,8 +352,8 @@ Mavlink_vehicle::Update_boot_time(std::chrono::milliseconds boot_duration)
                     // already for more than 15 seconds.
                     VEHICLE_LOG_INF((*this), "Not resetting altitude origin on connect");
                 } else {
-                    //VEHICLE_LOG_INF((*this), "Resetting altitude origin on connect");
-                    //Reset_altitude_origin();
+                    VEHICLE_LOG_INF((*this), "Resetting altitude origin on connect");
+                    Reset_altitude_origin();
                 }
             }
             last_known_vehicle_boot_time_known = true;
@@ -1930,6 +1930,9 @@ Mavlink_vehicle::Mission_upload::On_mission_ack(
     }
     if (message->payload->type == mavlink::MAV_MISSION_RESULT::MAV_MISSION_ACCEPTED) {
         Call_next_action(true);
+    } else if (message->payload->type == mavlink::MAV_MISSION_RESULT::MAV_MISSION_INVALID_SEQUENCE) {
+        // do nothing.
+        // this case may happened due to big latency
     } else {
         auto p = message->payload->type.Get();
         Call_next_action(
@@ -1957,20 +1960,22 @@ Mavlink_vehicle::Mission_upload::On_mission_request(
         return;
     }
 #endif
-
+    VEHICLE_LOG_DBG(vehicle, "MISSION REQ: %d (current: %zd)", static_cast<int>(message->payload->seq), current_action);
     if (current_action == -1 && message->payload->seq) {
         /* Wrong sequence. First is expected always. */
-        return;
+        VEHICLE_LOG_DBG(vehicle, "Wrong sequence. First is expected always.");
     }
 
     if (message->payload->seq >= mission_items.size()) {
         /* Wrong sequence, out of bounds. */
+        VEHICLE_LOG_DBG(vehicle, "Wrong sequence, out of bounds.");
         return;
     } else if (current_action == message->payload->seq) {
         /* Request for the same item. */
         VEHICLE_LOG_INF(vehicle, "Requested same item: %zd", current_action);
     } else if (current_action + 1 != message->payload->seq) {
         /* Wrong sequence. */
+        VEHICLE_LOG_DBG(vehicle, "Wrong sequence.");
         return;
     } else {
         attempts_action_left = try_count;
